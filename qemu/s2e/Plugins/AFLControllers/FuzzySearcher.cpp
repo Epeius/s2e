@@ -66,8 +66,12 @@ using namespace llvm::sys;
 
 extern "C" void kbd_put_keycode(int keycode);
 
+
+#ifndef STRING_G_POOL
+#define STRING_G_POOL
 std::string g_inicasepool = "/tmp/inipool/";
 std::string g_curcasepool = "/tmp/curpool/";
+#endif
 
 namespace s2e {
 namespace plugins {

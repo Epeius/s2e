@@ -51,6 +51,8 @@
 #define myprintf s2e_printf
 #endif
 
+#define AFLS2EGUESTPIPE 284 // used for pipe communication, this MUST BE EQUAL in s2eafl.c
+
 // ***********************************************
 // Helper functions (adapted from klee_init_env.c)
 // ***********************************************
@@ -226,7 +228,7 @@ static void __s2e_init_env(int *argcPtr, char ***argvPtr)
 
     sym_arg_name[4] = '\0';
 
-
+    int waitAfl = 0;
     // Load the process map and get the info about the current process
     procmap_entry_t* proc_map = load_process_map();
     display_process_map(proc_map);
@@ -246,6 +248,7 @@ static void __s2e_init_env(int *argcPtr, char ***argvPtr)
                      "                               current process only\n"
                      "   -select-process-code      - Enable forking in the code section of the current binary only\n"
                      "   -concolic                 - Augment existing concrete arguments with symbolic values\n"
+                     "   -wait-afl                 - Enable waitting for afl's new testcase\n"
                      "   -sym-arg <N>              - Replace by a symbolic argument of length N\n"
                      "   -sym-args <MIN> <MAX> <N> - Replace by at least MIN arguments and at most\n"
                      "                               MAX arguments, each with maximum length N\n\n");
@@ -307,6 +310,12 @@ static void __s2e_init_env(int *argcPtr, char ***argvPtr)
             myprintf("Forks will be restricted to %s\n", process_base_name);
             s2e_codeselector_select_module(process_base_name);
         }
+        else if (__streq(argv[k], "--wait-afl") || __streq(argv[k], "-wait-afl")) {
+            // add by epeius so that we can wait for afl's new test case
+            k++;
+            myprintf("Waitting for AFL ...\n");
+            waitAfl = 1;
+        }
         else {
             /* simply copy arguments */
             if (concolic_mode) {
@@ -323,6 +332,17 @@ static void __s2e_init_env(int *argcPtr, char ***argvPtr)
 
     *argcPtr = new_argc;
     *argvPtr = final_argv;
+
+    while (s2e_version() == 0);
+    register_module(proc_map, argv[0]);
+    const char *process_base_name = __base_name(argv[0]);
+    s2e_codeselector_select_module(process_base_name); // we only want to test our main module. This should be dynamically determined as an argument
+    if (waitAfl) {
+        char tmp[4] = "nudt";
+        if (read(AFLS2EGUESTPIPE, tmp, 4) != 4)
+            exit(2); // we want block here, why not ?
+    }
+
 }
 
 // ****************************

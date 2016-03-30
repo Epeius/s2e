@@ -74,6 +74,7 @@ S2E_DEFINE_PLUGIN(BaseInstructions, "Default set of custom instructions plugin",
 
 void BaseInstructions::initialize()
 {
+    m_current_conditon = 0;
     s2e()->getCorePlugin()->onCustomInstruction.connect(
             sigc::mem_fun(*this, &BaseInstructions::onCustomInstruction));
 
@@ -213,6 +214,53 @@ void BaseInstructions::killState(S2EExecutionState *state)
        << "            message: \"" << message << "\"\n"
        << "            status: " << status;
     s2e()->getExecutor()->terminateStateEarly(*state, os.str());
+}
+
+
+void BaseInstructions::TellAFL(S2EExecutionState *state)
+{
+    char tmp[4];
+    tmp[0] = 'n';
+    tmp[1] = 'u';
+    tmp[2] = 'd';
+    tmp[3] = 't';
+    write(AFLS2EHOSTPIPE_S2E + 1, tmp, sizeof(tmp)); // tell AFL we have finish a test procedure
+    s2e()->getMessagesStream(state) << "I have told AFL that I am done, so what?"<< '\n';
+    return;
+}
+
+
+void BaseInstructions::forkState(S2EExecutionState *state)
+{
+    klee::Executor::StatePair sp;
+    klee::ref<klee::Expr> dummy_symb;
+    bool oldForkStatus = state->isForkingEnabled();
+    state->jumpToSymbolicCpp();
+    state->enableForking();
+    dummy_symb = state->createSymbolicValue("dummy_symb_var",
+                    klee::Expr::Int32); // we need to create an initial state which can be used to continue execution
+    klee::ref<klee::Expr> cond = klee::NeExpr::create(dummy_symb,
+                klee::ConstantExpr::create(m_current_conditon, klee::Expr::Int32));
+    sp = s2e()->getExecutor()->fork(*state, cond, false);
+
+    S2EExecutionState *ts = static_cast<S2EExecutionState *>(sp.first);
+    S2EExecutionState *fs = static_cast<S2EExecutionState *>(sp.second);
+
+    klee::ref<klee::Expr> condnot = klee::EqExpr::create(dummy_symb,
+            klee::ConstantExpr::create(m_current_conditon, klee::Expr::Int32));
+    fs->addConstraint(condnot);
+
+    ts->setForking(oldForkStatus);
+    fs->setForking(oldForkStatus);
+
+    ts->m_is_carry_on_state = true;
+    fs->m_is_carry_on_state = false;
+
+    m_current_conditon++;
+
+    s2e()->getMessagesStream(state) << "we forked a new state on state "  << state->getID() << '\n';
+
+    return;
 }
 
 void BaseInstructions::printExpression(S2EExecutionState *state)
@@ -560,6 +608,16 @@ void BaseInstructions::handleBuiltInOps(S2EExecutionState* state, uint64_t opcod
             makeSymbolic(state, true);
             break;
         }
+        // add by epeius in order to control fork in guest
+        case 0x12: {/* s2e_fork_state */
+            forkState(state);
+            break;
+        }
+
+        case 0x13: {
+            TellAFL(state);
+            break;
+        }
 
         case 0x20: /* concretize */
             concretize(state, true);
@@ -633,11 +691,12 @@ void BaseInstructions::handleBuiltInOps(S2EExecutionState* state, uint64_t opcod
 void BaseInstructions::onCustomInstruction(S2EExecutionState* state, 
         uint64_t opcode)
 {
-	s2e()->getDebugStream(state)
-	                        << "BaseInstructions: custom instruction (opcode: "
-	                        << hexval(opcode)
-	                        << ") called.\n";
-
+	if (0){
+        s2e()->getDebugStream(state)
+                                << "BaseInstructions: custom instruction (opcode: "
+                                << hexval(opcode)
+                                << ") called.\n";
+	}
     uint8_t opc = (opcode>>OPSHIFT) & 0xFF;
     if (opc <= 0x70) {
         handleBuiltInOps(state, opcode);

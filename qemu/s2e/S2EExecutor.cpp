@@ -184,7 +184,7 @@ namespace {
     cl::opt<bool>
     ForkOnSymbolicAddress("fork-on-symbolic-address",
             cl::desc("Fork on each memory access with symbolic address"),
-            cl::init(true));
+            cl::init(false));
 
     cl::opt<bool>
     ConcretizeIoAddress("concretize-io-address",
@@ -246,6 +246,11 @@ VerboseStateDeletion("verbose-state-deletion",
 cl::opt<bool>
 ConcolicMode("use-concolic-execution",
                cl::desc("Concolic execution mode"),  cl::init(true));
+
+//Sometimes we may just want to propagate the constraint during the true execution path, eg: taint analysis
+cl::opt<bool>
+TaintMode("use-taint-execution",
+               cl::desc("taint execution mode,  single path symbex"),  cl::init(false));
 
 cl::opt<bool>
 DebugConstraints("debug-constraints",
@@ -887,8 +892,10 @@ S2EExecutor::S2EExecutor(S2E* s2e, TCGLLVMContext *tcgLLVMContext,
     g_s2e_concretize_io_addresses = ConcretizeIoAddress;
     g_s2e_concretize_io_writes = ConcretizeIoWrites;
 
+    if (TaintMode)
+        ConcolicMode = TaintMode; // Taint mode inherits from Concolic mode
     concolicMode = ConcolicMode;
-
+    taintMode = TaintMode;
     if (UseFastHelpers) {
         if (!ForkOnSymbolicAddress) {
             s2e->getWarningsStream()
@@ -1453,12 +1460,15 @@ ExecutionState* S2EExecutor::selectNonSpeculativeState(S2EExecutionState *state)
         }
 
         newState = &searcher->selectState();
-
+        S2EExecutionState *s2enewState = dynamic_cast<S2EExecutionState*>(newState);
+        g_s2e->getDebugStream() << "selectNonSpeculativeState: searcher->selectState return state: " << s2enewState->getID() << "\n";
         if (newState->isSpeculative()) {
             //The searcher wants us to execute a speculative state.
             //The engine must make sure that such a state
             //satisfies all the path constraints.
+            g_s2e->getDebugStream() << "selectNonSpeculativeState: searcher->selectState return state: " << s2enewState->getID() << ", it is a speculative state\n";
             if (!resolveSpeculativeState(*newState)) {
+                g_s2e->getDebugStream() << "selectNonSpeculativeState: searcher->selectState return state: " << s2enewState->getID() << ", it is a speculative state, and cannot be solved\n";
                 terminateState(*newState);
                 updateStates(state);
                 continue;
@@ -1513,6 +1523,7 @@ S2EExecutionState* S2EExecutor::selectNextState(S2EExecutionState *state)
 
     S2EExecutionState* newState =
             static_cast<S2EExecutionState*  >(&newKleeState);
+    g_s2e->getDebugStream(state) << "S2EExecutor: selectNonSpeculativeState return state: " << newState->getID() << "\n";
     assert(states.find(newState) != states.end());
 
     if(!state->m_active) {
@@ -2109,7 +2120,41 @@ S2EExecutor::StatePair S2EExecutor::fork(ExecutionState &current,
 
     StatePair res;
 
-    if (ConcolicMode) {
+    if (taintMode){
+        // We want to choose our concrete path
+        condition = simplifyExpr(current, condition);
+        ref<Expr> selectcondition;
+        ref<Expr> nonselectcondition;
+        S2EExecutionState* s2ecurrent = static_cast<S2EExecutionState*>(&current);
+
+        if (dyn_cast<klee::ConstantExpr>(condition)) {
+            // if current condition is a constant, give this chance to KLEE
+            selectcondition = condition;
+            res = Executor::fork(current, condition, isInternal);
+        } else {
+            //Evaluate the expression using the current variable assignment.
+            ref<Expr> evalResult = current.concolics.evaluate(condition);
+            klee::ConstantExpr *ce = dyn_cast<klee::ConstantExpr>(evalResult);
+            assert(ce && "Could not evaluate the expression to a constant.");
+
+            if (ce->isTrue()) {
+                //Condition is true in the current state
+                selectcondition = condition;
+                nonselectcondition = Expr::createIsZero(condition);
+                addConstraint(current, condition);
+                res = StatePair(&current, 0);
+            } else {
+                //Condition is false in the current state
+                selectcondition = Expr::createIsZero(condition);
+                nonselectcondition = condition;
+                addConstraint(current, selectcondition);
+                res = StatePair(0, &current);
+            }
+            m_s2e->getCorePlugin()->onTaintFork.emit(s2ecurrent, selectcondition, nonselectcondition);
+        }
+
+    }
+    else if (ConcolicMode) {
         res = Executor::concolicFork(current, condition, isInternal);
     } else {
         res = Executor::fork(current, condition, isInternal);
@@ -2289,12 +2334,13 @@ void S2EExecutor::yieldState(ExecutionState &s)
 
     g_s2e->getWarningsStream().flush();
     g_s2e->getDebugStream().flush();
-
+    g_s2e->getDebugStream() << "aaaaa\n";
     // Skip the opcode
     state.writeCpuState(CPU_OFFSET(PROG_COUNTER), state.getPc() + S2E_OPCODE_SIZE, CPU_REG_SIZE << 3);
-
+    g_s2e->getDebugStream() << "bbbbb\n";
     // Stop current execution
     state.writeCpuState(CPU_OFFSET(exception_index), EXCP_S2E, 8*sizeof(int));
+    g_s2e->getDebugStream() << "cccccc\n";
     throw CpuExitException();
 }
 

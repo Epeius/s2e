@@ -83,7 +83,8 @@ private:
     void open(S2EExecutionState *state);
     void close(S2EExecutionState *state);
     void read(S2EExecutionState *state);
-
+    void deletefile(S2EExecutionState *state);
+    void find(S2EExecutionState *state);
     void onCustomInstruction(S2EExecutionState* state, uint64_t opcode);
 };
 

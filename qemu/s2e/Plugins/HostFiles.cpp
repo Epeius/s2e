@@ -226,6 +226,97 @@ void HostFiles::close(S2EExecutionState *state)
     }
 }
 
+void HostFiles::deletefile(S2EExecutionState *state)
+{
+    target_ulong fnamePtr = 0;
+    target_ulong success = 0;
+    bool ok = true;
+    ok &= state->readCpuRegisterConcrete(CPU_OFFSET(HOSTFILES_OPENFILENAME), &fnamePtr,
+                                                                 CPU_REG_SIZE);
+    state->writeCpuRegisterConcrete(CPU_OFFSET(HOSTFILES_RETURN), &success,
+                                                                 CPU_REG_SIZE);
+
+    if (!ok) {
+        s2e()->getWarningsStream(state)
+            << "ERROR: symbolic argument was passed to s2e_op HostFiles "
+            << '\n';
+        return;
+    }
+
+    std::string fname;
+    if(!state->readString(fnamePtr, fname) || fname.size() == 0) {
+        s2e()->getWarningsStream(state)
+            << "Error reading file name string from the guest" << '\n';
+        return;
+    }
+
+    /* Check that there aren't any ../ in the path */
+    if (fname.find("..") != std::string::npos) {
+        s2e()->getWarningsStream(state)
+                << "HostFiles: file name must not contain .. sequences ("
+                << fname << ")\n;";
+        return;
+    }
+
+    llvm::sys::Path path;
+
+    /* Find the path prefix for the given relative file */
+    foreach2(it, m_baseDirectories.begin(), m_baseDirectories.end()) {
+        path = llvm::sys::Path(*it);
+        path.appendComponent(fname);
+        if (llvm::sys::fs::exists(path.str())) {
+            success = path.eraseFromDisk() ? 1 : 0;
+            break;
+        }
+    }
+    state->writeCpuRegisterConcrete(CPU_OFFSET(HOSTFILES_RETURN), &success,
+                                                                 CPU_REG_SIZE);
+
+}
+
+// we don't want to talk about anything during this procedure
+void HostFiles::find(S2EExecutionState *state)
+{
+    target_ulong fnamePtr = 0;
+    target_ulong success = 0;
+    bool ok = true;
+    ok &= state->readCpuRegisterConcrete(CPU_OFFSET(HOSTFILES_OPENFILENAME), &fnamePtr,
+                                                                 CPU_REG_SIZE);
+    state->writeCpuRegisterConcrete(CPU_OFFSET(HOSTFILES_RETURN), &success,
+                                                                 CPU_REG_SIZE);
+
+    if (!ok)
+        return;
+
+
+    std::string fname;
+    if(!state->readString(fnamePtr, fname) || fname.size() == 0)
+        return;
+
+
+    /* Check that there aren't any ../ in the path */
+    if (fname.find("..") != std::string::npos)
+        return;
+
+
+    llvm::sys::Path path;
+
+    /* Find the path prefix for the given relative file */
+    foreach2(it, m_baseDirectories.begin(), m_baseDirectories.end()) {
+        path = llvm::sys::Path(*it);
+        path.appendComponent(fname);
+        if (llvm::sys::fs::exists(path.str())) {
+            success = 1;
+            state->writeCpuRegisterConcrete(CPU_OFFSET(HOSTFILES_RETURN), &success,
+                                                                             CPU_REG_SIZE);
+            break;
+        }
+    }
+}
+
+
+
+
 void HostFiles::onCustomInstruction(S2EExecutionState *state, uint64_t opcode)
 {
     if (!OPCODE_CHECK(opcode, HOSTFILES_OPCODE)) {
@@ -252,6 +343,15 @@ void HostFiles::onCustomInstruction(S2EExecutionState *state, uint64_t opcode)
 
     //case 3: // write
     //    break;
+    case 4:{
+        deletefile(state);
+        break;
+    }
+
+    case 5:{
+        find(state);
+        break;
+    }
 
     default:
         s2e()->getWarningsStream(state)

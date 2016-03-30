@@ -56,7 +56,7 @@ typedef struct _cmd_t {
     char *description;
 } cmd_t;
 
-static void handler_kill(const char **args)
+static void handler_killstate(const char **args)
 {
     int status = atoi(args[0]);
     const char *message = args[1];
@@ -225,16 +225,23 @@ static void handler_fork(const char **args)
     }
 }
 
+static void handler_forkstate(const char **args)
+{
+    s2e_fork_state();
+    printf("%d\n", s2e_get_path_id());
+}
+
 #define COMMAND(c, args, desc) { #c, handler_##c, args, desc }
 
 static cmd_t s_commands[] = {
-    COMMAND(kill, 2, "Kill the current state with the specified numeric status and message"),
+    COMMAND(killstate, 2, "Kill the current state with the specified numeric status and message"),
     COMMAND(message, 1, "Display a message"),
     COMMAND(wait, 0, "Wait for S2E mode"),
     COMMAND(symbwrite, 1, "Write n symbolic bytes to stdout"),
     COMMAND(symbfile, 1, "Makes the specified file concolic. The file should be stored in a ramdisk."),
     COMMAND(exemplify, 0, "Read from stdin and write an example to stdout"),
     COMMAND(fork, 1, "Enable/disable forking"),
+    COMMAND(forkstate, 0, "fork a new state"),
     { NULL, NULL, 0, NULL }
 };
 

@@ -235,6 +235,13 @@ bool ModuleExecutionDetector::opAddModuleConfigEntry(S2EExecutionState *state)
     return true;
 }
 
+void ModuleExecutionDetector::opInformTarget(S2EExecutionState *state)
+{
+    uint64_t pc = state->getPc();
+    uint64_t pid = m_Monitor->getPid(state, pc);
+    s2e()->getDebugStream() << "[From guest] We are in PID: " << pid << " and PC: " << hexval(pc) << '\n';
+}
+
 void ModuleExecutionDetector::onCustomInstruction(
         S2EExecutionState *state,
         uint64_t operand
@@ -260,6 +267,10 @@ void ModuleExecutionDetector::onCustomInstruction(
                 state->setPc(state->getPc() + OPCODE_SIZE);
                 throw CpuExitException();
             }
+            break;
+        }
+        case 1:{
+            opInformTarget(state);
             break;
         }
     }

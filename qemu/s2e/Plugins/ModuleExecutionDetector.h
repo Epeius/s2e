@@ -160,6 +160,7 @@ private:
 
     void initializeConfiguration();
     bool opAddModuleConfigEntry(S2EExecutionState *state);
+    void opInformTarget(S2EExecutionState *state);
 
     void onCustomInstruction(
             S2EExecutionState *state,

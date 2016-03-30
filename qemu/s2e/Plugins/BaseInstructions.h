@@ -60,14 +60,18 @@ private:
         uint64_t opcode);
     void invokePlugin(S2EExecutionState *state);
     void makeSymbolic(S2EExecutionState *state, bool makeConcolic);
+    void forkState(S2EExecutionState *state);
     void isSymbolic(S2EExecutionState *state);
     void killState(S2EExecutionState *state);
+    void TellAFL(S2EExecutionState *state);
     void printExpression(S2EExecutionState *state);
     void printMessage(S2EExecutionState *state, bool isWarning);
     void printMemory(S2EExecutionState *state);
     void concretize(S2EExecutionState *state, bool addConstraint);
     void sleep(S2EExecutionState *state);
     void assume(S2EExecutionState *state);
+
+    int m_current_conditon;
 
 #ifdef TARGET_ARM
 

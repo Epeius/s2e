@@ -1,6 +1,6 @@
 include config.mak
 
-BINARIES = init_env.so s2ecmd s2eget
+BINARIES = init_env.so s2ecmd s2eget s2efetch s2eafl
 CCFLAGS = -I$(TOOLS_DIR)/include -Wall -g -O0 -std=c99
 LDLIBS = -ldl
 
@@ -13,6 +13,12 @@ s2ecmd: $(TOOLS_DIR)/s2ecmd/s2ecmd.c $(TOOLS_DIR)/include/s2e.h
 	$(CC) $(CCFLAGS) $(CFLAGS) $< -o $@
 
 s2eget: $(TOOLS_DIR)/s2eget/s2eget.c $(TOOLS_DIR)/include/s2e.h
+	$(CC) $(CCFLAGS) $(CFLAGS) $< -o $@
+
+s2efetch: $(TOOLS_DIR)/s2efetch/s2efetch.c $(TOOLS_DIR)/include/s2e.h
+	$(CC) $(CCFLAGS) $(CFLAGS) $< -o $@
+
+s2eafl: $(TOOLS_DIR)/s2eafl/s2eafl.c $(TOOLS_DIR)/include/s2e.h
 	$(CC) $(CCFLAGS) $(CFLAGS) $< -o $@
 
 init_env.so: $(TOOLS_DIR)/init_env/init_env.c

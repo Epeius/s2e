@@ -112,13 +112,13 @@ protected:
 
     struct QEMUTimer *m_stateSwitchTimer;
 
+public:
     /** Holds the yielded state, if any */
     S2EExecutionState* yieldedState;
 
     /** Moves yielded state back into list of schedulable states */
     void restoreYieldedState(void);
 
-public:
     S2EExecutor(S2E* s2e, TCGLLVMContext *tcgLVMContext,
                 const InterpreterOptions &opts,
                 klee::InterpreterHandler *ie);
@@ -231,6 +231,13 @@ public:
     const S2EExecutionState* getYieldedState() {
         return yieldedState;
     }
+
+    bool getTaintMode(){
+        return this->taintMode;
+    }
+    void setTaintMode(bool _taintMode){
+       this->taintMode = _taintMode;
+     }
 
 protected:
     static void handlerTraceMemoryAccess(klee::Executor* executor,

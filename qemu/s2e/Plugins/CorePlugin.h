@@ -54,7 +54,8 @@ struct QObject;
 }
 
 namespace s2e {
-
+#define AFLS2EHOSTPIPE_S2E 137 // pipe used to synchronize myself and AFL, see in afl-fuzz.c (for S2E write)
+#define AFLS2EHOSTPIPE_AFL 147 // pipe used to synchronize myself and AFL, see in afl-fuzz.c (for AFL write)
 class S2EExecutionState;
 
 /** A type of a signal emitted on instruction execution. Instances of this signal
@@ -206,6 +207,13 @@ public:
                  const std::vector<S2EExecutionState*>& /* newStates */,
                  const std::vector<klee::ref<klee::Expr> >& /* newConditions */>
             onStateFork;
+
+    /** Signal emitted when the state may fork in taint mode */
+    /*   for single path symbex (eg. taint analysis) purpose*/
+    sigc::signal<void, S2EExecutionState* /* current state */,
+                 const klee::ref<klee::Expr> & /* selected condition */,
+                 const klee::ref<klee::Expr> & /* non-selected condition */>
+            onTaintFork;
 
     sigc::signal<void,
                  S2EExecutionState*, /* currentState */

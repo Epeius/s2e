@@ -121,6 +121,17 @@ void CodeSelector::onModuleTransition(
     }
 
     const std::string *id = m_executionDetector->getModuleId(*currentModule);
+    //const std::string *pre_id = m_executionDetector->getModuleId(*prevModule);
+
+//    if(pre_id==NULL)
+//        s2e()->getDebugStream() << "CodeSelector: Transit from module " << "NULL";
+//    else
+//        s2e()->getDebugStream() << "CodeSelector: Transit from module " << *pre_id;
+    if(id==NULL)
+        s2e()->getDebugStream() << " to module " << "NULL" << ".\n";
+    else
+        s2e()->getDebugStream() << " to module " << *id << ".\n";
+
     if (m_interceptedModules.find(*id) == m_interceptedModules.end()) {
         state->disableForking();
         return;

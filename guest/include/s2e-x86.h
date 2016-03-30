@@ -294,6 +294,22 @@ static inline void s2e_kill_state(int status, const char *message)
     );
 }
 
+/** fork current state, we don't need any arguments and returns. */
+static inline void s2e_fork_state(void)
+{
+    __asm__ __volatile__(
+            S2E_INSTRUCTION_SIMPLE(12)
+        );
+}
+
+/** Tell alf we finish. */
+static inline void s2e_tell_afl(void)
+{
+    __asm__ __volatile__(
+        S2E_INSTRUCTION_SIMPLE(13)
+    );
+}
+
 /** Disable timer interrupt in the guest. */
 static inline void s2e_disable_timer_interrupt(void)
 {
@@ -401,6 +417,45 @@ static inline int s2e_read(int fd, char *buf, int count)
     return res;
 }
 
+/** delete file from the guest.
+ *
+ * NOTE: This requires the HostFiles plugin. */
+static inline int s2e_deletefile(const char *fname)
+{
+    int res;
+    __s2e_touch_string(fname);
+    __asm__ __volatile__(
+       S2E_INSTRUCTION_COMPLEX(EE, 04)
+       : "=a" (res) : "a"(0), "b" (fname)
+   );
+   return res;
+}
+
+/** find file from the guest.
+ *
+ * NOTE: This requires the HostFiles plugin. */
+static inline int s2e_find(const char *fname)
+{
+    int res;
+    __s2e_touch_string(fname);
+    __asm__ __volatile__(
+        S2E_INSTRUCTION_COMPLEX(EE, 05)
+        : "=a" (res) : "a"(0), "b" (fname)
+    );
+    return res;
+}
+
+/** wait afl to generate testcase.
+ *
+ * NOTE: This requires that S2E is started by AFL so that we can get some pipes. */
+static inline int s2e_wait_afl_testcase(void)
+{
+    __asm__ __volatile__(
+            S2E_INSTRUCTION_SIMPLE(EA) // EA 00 indicates waitting for AFL
+    );
+}
+
+
 /** Enable memory tracing */
 static inline void s2e_memtracer_enable(void)
 {
@@ -504,6 +559,14 @@ static inline void s2e_moduleexec_add_module(const char *moduleId, const char *m
     __asm__ __volatile__(
         S2E_INSTRUCTION_SIMPLE(AF)
             : : "c" (moduleId), "a" (moduleName), "d" (kernelMode)
+    );
+}
+
+/** TELL S2E we are target */
+static inline void s2e_moduleexec_inform_target()
+{
+    __asm__ __volatile__(
+            S2E_INSTRUCTION_COMPLEX(AF, 01)
     );
 }
 

@@ -39,7 +39,6 @@
 #ifdef CONFIG_S2E
 #include "s2e/s2e_qemu.h"
 #endif
-
 #if defined(CONFIG_LLVM)
 #include "tcg/tcg-llvm.h"
 const int has_llvm_engine = 1;
@@ -593,6 +592,7 @@ int cpu_exec(CPUArchState *env)
                     next_tb = 0;
                     tb_invalidated_flag = 0;
                 }
+
 #ifdef CONFIG_DEBUG_EXEC
                 qemu_log_mask(CPU_LOG_EXEC, "Trace 0x%08lx [" TARGET_FMT_lx "] %s\n",
                              (long)tb->tc_ptr, tb->pc,
