@@ -185,6 +185,10 @@ namespace {
     ForkOnSymbolicAddress("fork-on-symbolic-address",
             cl::desc("Fork on each memory access with symbolic address"),
             cl::init(false));
+    cl::opt<unsigned>
+    S2EMaxForks("s2e-max-forks",
+             cl::desc("Only fork this many times for s2e(-1=off)"),
+             cl::init(~0u));
 
     cl::opt<bool>
     ConcretizeIoAddress("concretize-io-address",
@@ -562,6 +566,11 @@ void S2EExecutor::handleForkAndConcretize(Executor* executor,
 
         concreteAddress = value;
     }
+    S2EExecutionState* s2ecurrent = static_cast<S2EExecutionState*>(state);
+    g_s2e->getDebugStream(s2ecurrent) << "handleForkAndConcretize: pc is " << hexval(s2ecurrent->getPc()) <<
+            ", current address is " << address << ", and concreteAddress is " << concreteAddress << "\n";
+
+    g_s2e->getCorePlugin()->onHandleForkAndConcretize.emit(s2ecurrent, address);
 
     klee::ref<klee::Expr> condition = EqExpr::create(concreteAddress, address);
 
@@ -586,6 +595,8 @@ void S2EExecutor::handleForkAndConcretize(Executor* executor,
         state->addConstraint(condition);
         s2eExecutor->bindLocal(target, *state, concreteAddress);
     }
+    g_s2e->getDebugStream(s2ecurrent) << "handleForkAndConcretize end, and condition is: \n";
+    state->constraints.print(g_s2e->getDebugStream(s2ecurrent));
 }
 
 void S2EExecutor::handleMakeSymbolic(Executor* executor,
@@ -1346,6 +1357,8 @@ void S2EExecutor::doStateSwitch(S2EExecutionState* oldState,
             << "Switching from state " << (oldState ? oldState->getID() : -1)
             << " to state " << (newState ? newState->getID() : -1) << '\n';
 
+
+
     const MemoryObject* cpuMo = oldState ? oldState->m_cpuSystemState :
                                             newState->m_cpuSystemState;
 
@@ -1445,6 +1458,7 @@ void S2EExecutor::doStateSwitch(S2EExecutionState* oldState,
 
     g_s2e_disable_tlb_flush = 0;
 
+
     //m_s2e->getCorePlugin()->onStateSwitch.emit(oldState, newState);
 }
 
@@ -1460,15 +1474,11 @@ ExecutionState* S2EExecutor::selectNonSpeculativeState(S2EExecutionState *state)
         }
 
         newState = &searcher->selectState();
-        S2EExecutionState *s2enewState = dynamic_cast<S2EExecutionState*>(newState);
-        g_s2e->getDebugStream() << "selectNonSpeculativeState: searcher->selectState return state: " << s2enewState->getID() << "\n";
         if (newState->isSpeculative()) {
             //The searcher wants us to execute a speculative state.
             //The engine must make sure that such a state
             //satisfies all the path constraints.
-            g_s2e->getDebugStream() << "selectNonSpeculativeState: searcher->selectState return state: " << s2enewState->getID() << ", it is a speculative state\n";
             if (!resolveSpeculativeState(*newState)) {
-                g_s2e->getDebugStream() << "selectNonSpeculativeState: searcher->selectState return state: " << s2enewState->getID() << ", it is a speculative state, and cannot be solved\n";
                 terminateState(*newState);
                 updateStates(state);
                 continue;
@@ -1523,7 +1533,6 @@ S2EExecutionState* S2EExecutor::selectNextState(S2EExecutionState *state)
 
     S2EExecutionState* newState =
             static_cast<S2EExecutionState*  >(&newKleeState);
-    g_s2e->getDebugStream(state) << "S2EExecutor: selectNonSpeculativeState return state: " << newState->getID() << "\n";
     assert(states.find(newState) != states.end());
 
     if(!state->m_active) {
@@ -2086,7 +2095,26 @@ void S2EExecutor::doStateFork(S2EExecutionState *originalState,
 {
     assert(originalState->m_active && !originalState->m_runningConcrete);
 
+
+    S2EExecutionState* newState0 = newStates[0];
+    S2EExecutionState* newState1 = newStates[1];
+    if (originalState->getID() == newState0->getID())
+        newState1->m_father = newState0;
+    else
+        newState0->m_father = newState1;
     llvm::raw_ostream& out = m_s2e->getMessagesStream(originalState);
+    out << "m_forkedfromMe is " << originalState->m_forkedfromMe << " and S2EMaxForks is " << S2EMaxForks << '\n';
+    if (originalState->getID()) {
+        if (S2EMaxForks != ~0u && originalState->m_forkedfromMe > S2EMaxForks)
+        {
+            newState0->disableForking();
+            newState0->disableSymbolicExecution();
+            newState1->disableForking();
+            newState1->disableSymbolicExecution();
+            taintMode = true;
+        }
+    }
+
     out << "Forking state " << originalState->getID()
             << " at pc = " << hexval(originalState->getPc()) << '\n';
 
@@ -2119,7 +2147,11 @@ S2EExecutor::StatePair S2EExecutor::fork(ExecutionState &current,
     assert(!static_cast<S2EExecutionState*>(&current)->m_runningConcrete);
 
     StatePair res;
-
+    S2EExecutionState* s2ecurrent = static_cast<S2EExecutionState*>(&current);
+    if (!s2ecurrent->getID()) //FIXME: HACK
+        taintMode = false;
+    else
+        taintMode = TaintMode;
     if (taintMode){
         // We want to choose our concrete path
         condition = simplifyExpr(current, condition);
@@ -2136,7 +2168,6 @@ S2EExecutor::StatePair S2EExecutor::fork(ExecutionState &current,
             ref<Expr> evalResult = current.concolics.evaluate(condition);
             klee::ConstantExpr *ce = dyn_cast<klee::ConstantExpr>(evalResult);
             assert(ce && "Could not evaluate the expression to a constant.");
-
             if (ce->isTrue()) {
                 //Condition is true in the current state
                 selectcondition = condition;
@@ -2150,6 +2181,8 @@ S2EExecutor::StatePair S2EExecutor::fork(ExecutionState &current,
                 addConstraint(current, selectcondition);
                 res = StatePair(0, &current);
             }
+            m_s2e->getDebugStream() << "Taint fork at " << hexval(s2ecurrent->getPc()) << ", select "<< ce->isTrue() << " branch. Condition is " << selectcondition
+                     << "\n";
             m_s2e->getCorePlugin()->onTaintFork.emit(s2ecurrent, selectcondition, nonselectcondition);
         }
 
@@ -2334,13 +2367,10 @@ void S2EExecutor::yieldState(ExecutionState &s)
 
     g_s2e->getWarningsStream().flush();
     g_s2e->getDebugStream().flush();
-    g_s2e->getDebugStream() << "aaaaa\n";
     // Skip the opcode
     state.writeCpuState(CPU_OFFSET(PROG_COUNTER), state.getPc() + S2E_OPCODE_SIZE, CPU_REG_SIZE << 3);
-    g_s2e->getDebugStream() << "bbbbb\n";
     // Stop current execution
     state.writeCpuState(CPU_OFFSET(exception_index), EXCP_S2E, 8*sizeof(int));
-    g_s2e->getDebugStream() << "cccccc\n";
     throw CpuExitException();
 }
 

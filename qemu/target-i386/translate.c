@@ -8017,8 +8017,9 @@ static inline void gen_intermediate_code_internal(CPUX86State *env,
         dc->insPc = pc_ptr;
         dc->done_instr_end = 0;
         dc->done_reg_access_end = 0;
-
+#ifdef CONFIG_FUZZY
         s2e_on_translate_instruction_start(g_s2e, g_s2e_state, tb, pc_ptr);
+#endif
         tb->pcOfLastInstr = pc_ptr;
         dc->useNextPc = 0;
         dc->nextPc = -1;
@@ -8029,8 +8030,10 @@ static inline void gen_intermediate_code_internal(CPUX86State *env,
         new_pc_ptr = disas_insn(dc, pc_ptr);
 
 #ifdef CONFIG_S2E
+#ifdef CONFIG_FUZZY
         //Compute the register mask and send the onRegisterAccess event
         s2e_translate_compute_reg_mask_end(dc);
+#endif
 #endif
 
 #ifdef CONFIG_S2E
@@ -8039,7 +8042,9 @@ static inline void gen_intermediate_code_internal(CPUX86State *env,
             dc->nextPc = new_pc_ptr - dc->cs_base;
             dc->useNextPc = 1;
         }
+#ifdef CONFIG_FUZZY
         gen_instr_end(dc);
+#endif
 #endif
         pc_ptr = new_pc_ptr;
         num_insns++;

@@ -455,7 +455,6 @@ static inline int s2e_wait_afl_testcase(void)
     );
 }
 
-
 /** Enable memory tracing */
 static inline void s2e_memtracer_enable(void)
 {

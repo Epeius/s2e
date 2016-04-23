@@ -109,7 +109,7 @@ void BaseInstructions::makeSymbolic(S2EExecutionState *state, bool makeConcolic)
             << "Inserting symbolic data at " << hexval(address)
             << " of size " << hexval(size)
             << " with name '" << nameStr << "'\n";
-
+    state->m_symFileLen = size;
     std::vector<unsigned char> concreteData;
     vector<ref<Expr> > symb;
 
@@ -209,10 +209,13 @@ void BaseInstructions::killState(S2EExecutionState *state)
 
     //Kill the current state
     s2e()->getMessagesStream(state) << "Killing state "  << state->getID() << '\n';
+    if(state->ExecTimer)
+        s2e()->getMessagesStream(state) << "State "  << state->getID() << " has ran for " << state->ExecTimer->check() << " us\n";
     std::ostringstream os;
     os << "State was terminated by opcode\n"
        << "            message: \"" << message << "\"\n"
        << "            status: " << status;
+
     s2e()->getExecutor()->terminateStateEarly(*state, os.str());
 }
 
@@ -531,6 +534,8 @@ void BaseInstructions::handleBuiltInOps(S2EExecutionState* state, uint64_t opcod
 
     switch((opcode>>OPSHIFT) & 0xFF) {
         case 0: { /* s2e_check */
+                s2e()->getDebugStream(state) << "SSSSSSSSSSSSSSSSSSSSSS\n";
+                s2e()->getDebugStream(state).flush();
                 target_ulong v = 1;
                 state->writeCpuRegisterConcrete(PARAM0, &v,
                                                 sizeof v);

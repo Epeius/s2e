@@ -65,6 +65,19 @@ extern "C" {
 
 /* struct */ CPUArchState;
 
+#ifdef CONFIG_FUZZY
+
+// new block need to be translated
+struct new_tsl {
+  target_ulong pc;
+  target_ulong cs_base;
+  uint64_t flags;
+  struct new_tsl* next;
+};
+
+#endif
+
+
 /* This should never be accessed from C++ code */
 extern struct S2E* g_s2e;
 struct PCIBus;
@@ -285,6 +298,7 @@ int s2e_is_zombie(struct S2EExecutionState* state);
 int s2e_is_speculative(struct S2EExecutionState *state);
 int s2e_is_yielded(struct S2EExecutionState *state);
 int s2e_is_runnable(struct S2EExecutionState* state);
+int s2e_get_stateID(struct S2EExecutionState* state);
 
 void s2e_dump_state(void);
 

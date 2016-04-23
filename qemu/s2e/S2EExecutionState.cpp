@@ -88,6 +88,7 @@ CPUTLBEntry s_cputlb_empty_entry = { -1, -1, -1, -1 };
 extern llvm::cl::opt<bool> PrintModeSwitch;
 extern llvm::cl::opt<bool> PrintForkingStatus;
 extern llvm::cl::opt<bool> ConcolicMode;
+extern llvm::cl::opt<bool> TaintMode;
 extern llvm::cl::opt<bool> VerboseStateDeletion;
 extern llvm::cl::opt<bool> DebugConstraints;
 
@@ -117,6 +118,11 @@ S2EExecutionState::S2EExecutionState(klee::KFunction *kf) :
 {
     //XXX: make this a struct, not a pointer...
 	m_preparingstate = false;
+	m_forkedfromMe = 0;
+	m_symFileLen = 0;
+	m_isfuzzymode = TaintMode;
+	m_father = NULL;
+	ExecTimer = NULL;
     m_timersState = new TimersState;
     m_dirtyMaskObject = NULL;
 }
@@ -141,6 +147,9 @@ S2EExecutionState::~S2EExecutionState()
 
     //XXX: This cannot be done, as device states may refer to each other
     //delete m_deviceState;
+
+    if (ExecTimer)
+        delete ExecTimer;
 
     delete m_timersState;
 }
@@ -349,7 +358,9 @@ ExecutionState* S2EExecutionState::clone()
 
     m_dirtyMaskObject = addressSpace.getWriteable(
             m_dirtyMask, m_dirtyMaskObject);
-
+    if(!ret->ExecTimer){
+        ret->ExecTimer = new klee::WallTimer();
+    }
     return ret;
 }
 
@@ -1538,8 +1549,7 @@ std::vector<ref<Expr> > S2EExecutionState::createConcolicArray(
             std::vector<unsigned char> &concreteBuffer)
 {
     assert(concreteBuffer.size() == size || concreteBuffer.size() == 0);
-
-    std::string sname = getUniqueVarName(name);
+    std::string sname = m_isfuzzymode ? name : getUniqueVarName(name);
     const Array *array = new Array(sname, size);
 
     UpdateList ul(array, 0);
@@ -1563,6 +1573,7 @@ std::vector<ref<Expr> > S2EExecutionState::createConcolicArray(
     if (concreteBuffer.size() == size) {
         if (ConcolicMode) {
             concolics.add(array, concreteBuffer);
+            m_strSymFileName = sname;
         } else {
             g_s2e->getWarningsStream(this)
                     << "Concolic mode disabled: ignoring concrete assignments for " << name << '\n';
@@ -2237,5 +2248,10 @@ int s2e_is_runnable(S2EExecutionState *state)
 {
     return !s2e_is_zombie(state) && !s2e_is_speculative(state) && !s2e_is_yielded(state);
 }
+
+int s2e_get_stateID(struct S2EExecutionState* state){
+    return state->getID();
+}
+
 
 } // extern "C"

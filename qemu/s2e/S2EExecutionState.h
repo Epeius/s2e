@@ -44,6 +44,11 @@
 #include "MemoryCache.h"
 #include "s2e_config.h"
 
+#include <klee/TimerStatIncrementer.h>
+
+#include <llvm/Support/TimeValue.h>
+
+
 /** S2E_TARGET_CONC_LIMIT defines the border between concrete and symbolic area.
  *  Eg. regs[15] is in concrete-only-area for ARM targets.
  *  This is often used as a CPUArchState offset, see CPU_CONC_LIMIT below.
@@ -111,6 +116,12 @@ class S2EExecutionState : public klee::ExecutionState
 {
 public:
 	bool m_preparingstate;//whether this is a prepare state
+	bool m_isfuzzymode;
+	int m_forkedfromMe;
+	S2EExecutionState* m_father; //specify the father
+	klee::WallTimer *ExecTimer;
+	std::string m_strSymFileName;
+	uint64_t m_symFileLen;
 protected:
     friend class S2EExecutor;
 

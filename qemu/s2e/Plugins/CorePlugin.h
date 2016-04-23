@@ -199,6 +199,11 @@ public:
                  klee::ref<klee::Expr> /* value */,
                  bool /* isWrite */>
             onPortAccess;
+    // epeius
+    /** Signal that is emitted on symbolic pointer memory access */
+    sigc::signal<void, S2EExecutionState*,
+                 klee::ref<klee::Expr> /* address */>
+            onHandleForkAndConcretize;
 
     sigc::signal<void> onTimer;
 

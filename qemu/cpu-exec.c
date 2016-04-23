@@ -159,7 +159,27 @@ static TranslationBlock *tb_find_slow(CPUArchState *env,
  not_found:
    /* if no translated code available, then translate it now */
     tb = tb_gen_code(env, pc, cs_base, flags, 0);
-
+/*
+#ifdef CONFIG_S2E
+#ifdef CONFIG_FUZZY
+    if(s2e_get_stateID(g_s2e_state)) {
+        struct new_tsl* node = (struct new_tsl*) malloc(sizeof(new_tsl));
+        node->pc = pc;
+        node->cs_base = cs_base;
+        node->flags = flags;
+        node->next = NULL;
+        if(g_new_traslate_BB_head == NULL)
+            g_new_traslate_BB_head = node;
+        else {
+            struct new_tsl* _it = g_new_traslate_BB_head;
+            while(it->next != NULL)
+            it = it->next;
+            it->next = node;
+        }
+    }
+#endif
+#endif
+*/
  found:
     /* Move the last found TB to the head of the list */
     if (likely(*ptb1)) {
@@ -215,7 +235,15 @@ static void cpu_handle_debug_exception(CPUArchState *env)
 }
 
 /* main execution loop */
+/*
+#ifdef CONFIG_S2E
+#ifdef CONFIG_FUZZY
 
+struct new_tsl* g_new_traslate_BB_head = NULL; // Hack: Use a list to store all the new basic blocks.
+
+#endif
+#endif
+*/
 volatile sig_atomic_t exit_request;
 
 int cpu_exec(CPUArchState *env)
@@ -583,6 +611,24 @@ int cpu_exec(CPUArchState *env)
 #endif /* DEBUG_DISAS || CONFIG_DEBUG_EXEC */
                 spin_lock(&tb_lock);
                 tb = tb_find_fast(env);
+                /*
+#ifdef CONFIG_S2E
+#ifdef CONFIG_FUZZY
+                if(s2e_get_stateID(g_s2e_state) == 0) { // if we are initial state
+                    assert(0 && "test");
+                    struct new_tsl* node = g_new_traslate_BB_head;
+                    struct new_tsl* nextnode;
+                    while(node) {
+                        nextnode = node->next;
+                        tb_find_slow(env, node->pc, node->cs_base, node->flags);
+                        free(node);
+                        node = nextnode;
+                    }
+                    assert(g_new_traslate_BB_head == NULL && "Still untranslated new block?");
+                }
+#endif
+#endif
+*/
                 /* Note: we do it here to avoid a gcc bug on Mac OS X when
                    doing it in tb_find_slow */
                 if (tb_invalidated_flag) {
