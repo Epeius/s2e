@@ -87,8 +87,8 @@ typedef uint64_t target_ulong __attribute__((aligned(TARGET_LONG_ALIGNMENT)));
 #define EXCP_S2E        0x10004 /* S2E requested exiting cpu loop */
 #endif
 
-//#define TB_JMP_CACHE_BITS 16
-#define TB_JMP_CACHE_BITS 24
+#define TB_JMP_CACHE_BITS 16
+//#define TB_JMP_CACHE_BITS 24
 #define TB_JMP_CACHE_SIZE (1 << TB_JMP_CACHE_BITS)
 
 /* Only the bottom TB_JMP_PAGE_BITS of the jump cache hash bits vary for
