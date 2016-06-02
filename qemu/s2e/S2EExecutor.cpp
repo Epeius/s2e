@@ -566,11 +566,6 @@ void S2EExecutor::handleForkAndConcretize(Executor* executor,
 
         concreteAddress = value;
     }
-    S2EExecutionState* s2ecurrent = static_cast<S2EExecutionState*>(state);
-    g_s2e->getDebugStream(s2ecurrent) << "handleForkAndConcretize: pc is " << hexval(s2ecurrent->getPc()) <<
-            ", current address is " << address << ", and concreteAddress is " << concreteAddress << "\n";
-
-    g_s2e->getCorePlugin()->onHandleForkAndConcretize.emit(s2ecurrent, address);
 
     klee::ref<klee::Expr> condition = EqExpr::create(concreteAddress, address);
 
@@ -595,8 +590,6 @@ void S2EExecutor::handleForkAndConcretize(Executor* executor,
         state->addConstraint(condition);
         s2eExecutor->bindLocal(target, *state, concreteAddress);
     }
-    g_s2e->getDebugStream(s2ecurrent) << "handleForkAndConcretize end, and condition is: \n";
-    state->constraints.print(g_s2e->getDebugStream(s2ecurrent));
 }
 
 void S2EExecutor::handleMakeSymbolic(Executor* executor,
@@ -1352,10 +1345,10 @@ void S2EExecutor::doStateSwitch(S2EExecutionState* oldState,
     qemu_aio_flush();
     bdrv_flush_all();
     cpu_disable_ticks();
-
-    m_s2e->getMessagesStream(oldState)
-            << "Switching from state " << (oldState ? oldState->getID() : -1)
-            << " to state " << (newState ? newState->getID() : -1) << '\n';
+    if(VerboseStateSwitching)
+        m_s2e->getMessagesStream(oldState)
+                << "Switching from state " << (oldState ? oldState->getID() : -1)
+                << " to state " << (newState ? newState->getID() : -1) << '\n';
 
 
 
@@ -2103,7 +2096,6 @@ void S2EExecutor::doStateFork(S2EExecutionState *originalState,
     else
         newState0->m_father = newState1;
     llvm::raw_ostream& out = m_s2e->getMessagesStream(originalState);
-    out << "m_forkedfromMe is " << originalState->m_forkedfromMe << " and S2EMaxForks is " << S2EMaxForks << '\n';
     if (originalState->getID()) {
         if (S2EMaxForks != ~0u && originalState->m_forkedfromMe > S2EMaxForks)
         {
@@ -2114,10 +2106,10 @@ void S2EExecutor::doStateFork(S2EExecutionState *originalState,
             taintMode = true;
         }
     }
-
+    if (VerboseFork) {
     out << "Forking state " << originalState->getID()
             << " at pc = " << hexval(originalState->getPc()) << '\n';
-
+    }
     for(unsigned i = 0; i < newStates.size(); ++i) {
         S2EExecutionState* newState = newStates[i];
 
@@ -2308,7 +2300,6 @@ bool S2EExecutor::merge(klee::ExecutionState &_base, klee::ExecutionState &_othe
 void S2EExecutor::terminateStateEarly(klee::ExecutionState &state, const llvm::Twine &message)
 {
     S2EExecutionState  *s2estate = static_cast<S2EExecutionState*>(&state);
-    m_s2e->getMessagesStream(s2estate) << message << '\n';
     m_s2e->getCorePlugin()->onTestCaseGeneration.emit(s2estate, message.str());
     terminateState(state);
 }

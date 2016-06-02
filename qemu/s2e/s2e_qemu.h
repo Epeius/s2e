@@ -62,10 +62,8 @@ struct QDict;
 #ifdef __cplusplus
 extern "C" {
 #endif
-
+#define CONFIG_FUZZY
 /* struct */ CPUArchState;
-
-#ifdef CONFIG_FUZZY
 
 // new block need to be translated
 struct new_tsl {
@@ -74,9 +72,6 @@ struct new_tsl {
   uint64_t flags;
   struct new_tsl* next;
 };
-
-#endif
-
 
 /* This should never be accessed from C++ code */
 extern struct S2E* g_s2e;

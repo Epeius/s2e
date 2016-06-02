@@ -50,7 +50,9 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
 
-#define CONFIG_FUZZY
+#include <s2e/Plugins/LinuxInterceptor/KernelFunctionMonitor.h>
+#include "SegSynchronization.h"
+#include <s2e/Plugins/X86ExceptionInterceptor.h>
 
 using namespace llvm::sys;
 namespace s2e {
@@ -65,7 +67,6 @@ public:
 public:
     //in order to improve efficiency, we write the branches of S2E to AFL's bitmap
     uint64_t m_prev_loc; //previous location when executing
-    bool m_isTryState;
     FuzzyS2EState();
     FuzzyS2EState(S2EExecutionState *s, Plugin *p);
     virtual ~FuzzyS2EState();
@@ -74,13 +75,44 @@ public:
 
     inline bool updateAFLBitmapSHM(unsigned char* bitmap, uint64_t pc);
 
-    inline void updateCaseGenetated(unsigned char* caseGenerated, uint64_t curBBpc);
-    inline bool isfindNewBranch(unsigned char* CaseGenetated, unsigned char* Virgin_bitmap, uint64_t pc);
 
     friend class FuzzyS2E;
 };
 
+/*
+ * Duplicated code from AFL.
+ */
+
 #define AFL_BITMAP_SIZE (1 << 16)
+
+// QEMU instances queue (as a file)
+#define QEMUQUEUE "/tmp/afl_qemu_queue"
+#define FIFOBUFFERSIZE 512
+// Test cases directory
+#define TESTCASEDIR "/tmp/afltracebits/"
+// Every control pipe
+#define CTRLPIPE(_x) (_x + 226)
+// Share memory ID
+#define READYSHMID 1234
+
+// Share memory structure, used to transmit information
+typedef struct _readyShm
+{
+    uint8_t  writable_mask;      // mask, non-zero means writable, zero means readable, used for simple synchronization?
+    uint32_t pid;                // Information: tells which qemu is done.
+    uint8_t  fault;              // Executation fault like FAULT_CRASH
+}ReadyShm;
+
+enum {
+  /* 00 */ FAULT_NONE,
+  /* 01 */ FAULT_HANG,
+  /* 02 */ FAULT_CRASH,
+  /* 03 */ FAULT_ERROR,  // Unable to execute target application.
+  /* 04 */ FAULT_NOINST, // impossible
+  /* 05 */ FAULT_NOBITS  // impossible
+};
+
+#define SMKEY 0x200 // MUST BE EQUAL to what in afl
 
 class FuzzyS2E: public Plugin, public klee::Searcher
 {
@@ -93,9 +125,11 @@ private:
             );
     void waitforafltestcase(void);
     bool generateCaseFile(S2EExecutionState *state, Path templatefile);
-    inline bool findPathFast(S2EExecutionState *state);
-    inline void replaceReadExprbyConstant(S2EExecutionState *state, klee::ref<klee::Expr> * expr, unsigned char *testcase, bool hasConst_Addr);
-    std::set<int> m_fileLen;
+    bool getAFLBitmapSHM();
+    bool initQemuQueue();
+    bool initReadySHM();
+    void TellAFL();
+
 public:
     struct SortById
     {
@@ -127,6 +161,7 @@ public:
     typedef std::pair<std::string, std::vector<unsigned char> > VarValuePair;
     typedef std::vector<VarValuePair> ConcreteInputs;
     ModuleExecutionDetector *m_detector;
+    KernelFunctionMonitor *m_kfmonitor;
 
     States m_normalStates;
     States m_speculativeStates;
@@ -145,20 +180,21 @@ public:
     unsigned char* m_aflBitmapSHM; //AFL's trace bits bitmap
     bool m_findBitMapSHM; //whether we have find trace bits bitmap
 
-    unsigned char* m_aflVirginSHM; //AFL's virgin bits bitmap
-    bool m_findVirginSHM; //whether we have find virgin bits bitmap
     std::string m_afl_initDir;   //AFL's initial directory
     // AFL end
     std::string m_mainModule;	//main module name (i.e. target binary)
     uint64_t m_mainPid;         //main process PID
-
+    uint8_t m_fault;
     unsigned char m_caseGenetated[AFL_BITMAP_SIZE]; // branches we have generated case
 
     int m_shmID;
-    int m_virgin_shmID;
-
+    uint32_t m_QEMUPid;
+    uint32_t m_PPid;
+    int m_queueFd;
+    ReadyShm* readyshm;
+    SegSynchronization m_SS;
     bool m_verbose; //verbose debug output
-
+    HostFiles* m_HostFiles;
 public:
     FuzzyS2E(S2E* s2e) :
             Plugin(s2e)
@@ -166,11 +202,11 @@ public:
         m_detector = NULL;
         m_shmID = 0;
         m_mainPid = 0;
-        m_virgin_shmID = 0;
+        m_fault = FAULT_NONE;
+        m_QEMUPid = 0;
+        m_queueFd = -1;
         m_aflBitmapSHM = 0;
         m_findBitMapSHM = false;
-        m_aflVirginSHM = 0;
-        m_findVirginSHM = false;
         m_verbose = false;
     }
     virtual ~FuzzyS2E();
@@ -180,19 +216,8 @@ public:
 
     void onModuleTranslateBlockStart(ExecutionSignal*, S2EExecutionState*,
             const ModuleDescriptor &, TranslationBlock*, uint64_t);
-    void onTranslateBlockStart(ExecutionSignal *signal,
-            S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
 
-    void onStateFork(S2EExecutionState *state,
-            const std::vector<S2EExecutionState*>& newStates,
-            const std::vector<klee::ref<klee::Expr> >& newConditions);
-
-    void onHandleForkAndConcretize(S2EExecutionState *state, klee::ref<klee::Expr> address);
-    inline void fillConstArrayVector(S2EExecutionState *state, klee::ReadExpr* _read, ConstArray& CA);
-    void onStateKill(S2EExecutionState *state);
-
-    bool getAFLBitmapSHM();
-    bool getAFLVirginSHM();
+    void onKernelFunctionExecutionStart(S2EExecutionState* state, KernelFunctionMonitor::KERNELFUNCS func);
 
 };
 }

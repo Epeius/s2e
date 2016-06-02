@@ -122,7 +122,6 @@ S2EExecutionState::S2EExecutionState(klee::KFunction *kf) :
 	m_symFileLen = 0;
 	m_isfuzzymode = TaintMode;
 	m_father = NULL;
-	ExecTimer = NULL;
     m_timersState = new TimersState;
     m_dirtyMaskObject = NULL;
 }
@@ -147,9 +146,6 @@ S2EExecutionState::~S2EExecutionState()
 
     //XXX: This cannot be done, as device states may refer to each other
     //delete m_deviceState;
-
-    if (ExecTimer)
-        delete ExecTimer;
 
     delete m_timersState;
 }
@@ -358,9 +354,6 @@ ExecutionState* S2EExecutionState::clone()
 
     m_dirtyMaskObject = addressSpace.getWriteable(
             m_dirtyMask, m_dirtyMaskObject);
-    if(!ret->ExecTimer){
-        ret->ExecTimer = new klee::WallTimer();
-    }
     return ret;
 }
 

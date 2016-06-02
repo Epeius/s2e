@@ -464,9 +464,11 @@ static inline void gen_op_jmp_T0(DisasContext *s)
 {
     tcg_gen_st_tl(cpu_T[0], cpu_env, offsetof(CPUX86State, eip));
     #ifdef CONFIG_S2E
+#ifndef CONFIG_FUZZY
     s2e_translate_compute_reg_mask_end(s);
     s2e_on_translate_block_end(g_s2e, g_s2e_state,
                                s->tb, s->insPc, 0, 0);
+#endif
     #endif
 }
 
@@ -673,9 +675,11 @@ static inline void gen_jmp_im(DisasContext *s, target_ulong pc)
     #ifdef CONFIG_S2E
     /* gen_eob may come after gototb, so we need to instrument here ! */
     if (s->enable_jmp_im) {
+#ifndef CONFIG_FUZZY
         s2e_translate_compute_reg_mask_end(s);
         s2e_on_translate_block_end(g_s2e, g_s2e_state,
                                    s->tb, s->insPc, 1, pc);
+#endif
     }
     #endif
 }
@@ -2386,9 +2390,9 @@ static inline void gen_goto_tb(DisasContext *s, int tb_num, target_ulong eip)
 #ifdef CONFIG_S2E
         //s->enable_jmp_im = 0;
         gen_jmp_im(s, eip);
-
+#ifndef CONFIG_FUZZY
         gen_instr_end(s);
-
+#endif
         tcg_gen_goto_tb(tb_num);
 
 
@@ -2801,7 +2805,9 @@ static void gen_eob(DisasContext *s)
 {
 
 #ifdef CONFIG_S2E
+#ifndef CONFIG_FUZZY
     gen_instr_end(s);
+#endif
 #endif
 
     if (s->cc_op != CC_OP_DYNAMIC)
@@ -8017,7 +8023,7 @@ static inline void gen_intermediate_code_internal(CPUX86State *env,
         dc->insPc = pc_ptr;
         dc->done_instr_end = 0;
         dc->done_reg_access_end = 0;
-#ifdef CONFIG_FUZZY
+#ifndef CONFIG_FUZZY
         s2e_on_translate_instruction_start(g_s2e, g_s2e_state, tb, pc_ptr);
 #endif
         tb->pcOfLastInstr = pc_ptr;
@@ -8030,7 +8036,7 @@ static inline void gen_intermediate_code_internal(CPUX86State *env,
         new_pc_ptr = disas_insn(dc, pc_ptr);
 
 #ifdef CONFIG_S2E
-#ifdef CONFIG_FUZZY
+#ifndef CONFIG_FUZZY
         //Compute the register mask and send the onRegisterAccess event
         s2e_translate_compute_reg_mask_end(dc);
 #endif
@@ -8042,7 +8048,7 @@ static inline void gen_intermediate_code_internal(CPUX86State *env,
             dc->nextPc = new_pc_ptr - dc->cs_base;
             dc->useNextPc = 1;
         }
-#ifdef CONFIG_FUZZY
+#ifndef CONFIG_FUZZY
         gen_instr_end(dc);
 #endif
 #endif

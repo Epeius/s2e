@@ -67,7 +67,7 @@ namespace s2e {
 namespace plugins {
 
 S2E_DEFINE_PLUGIN(FuzzyS2E, "FuzzyS2E plugin", "FuzzyS2E",
-        "ModuleExecutionDetector", "HostFiles");
+        "ModuleExecutionDetector", "HostFiles", "KernelFunctionMonitor");
 
 FuzzyS2E::~FuzzyS2E()
 {
@@ -76,6 +76,7 @@ void FuzzyS2E::initialize()
 {
     bool ok = false;
     std::string cfgkey = getConfigKey();
+    m_HostFiles = (HostFiles*)s2e()->getPlugin("HostFiles");
     m_verbose = s2e()->getConfig()->getBool(getConfigKey() + ".debugVerbose",
             false, &ok);
 
@@ -83,7 +84,7 @@ void FuzzyS2E::initialize()
             "MainModule", &ok);
     m_afl_initDir = s2e()->getConfig()->getString(cfgkey + ".aflInitDir",
             "INIT", &ok);
-
+    m_SS.initsem(SMKEY);
     m_detector = static_cast<ModuleExecutionDetector*>(s2e()->getPlugin(
             "ModuleExecutionDetector"));
     if (!m_detector) {
@@ -92,26 +93,36 @@ void FuzzyS2E::initialize()
     }
     m_detector->onModuleTranslateBlockStart.connect(
                                         sigc::mem_fun(*this, &FuzzyS2E::onModuleTranslateBlockStart));
-    s2e()->getCorePlugin()->onTranslateBlockStart.connect(
-                                        sigc::mem_fun(*this, &FuzzyS2E::onTranslateBlockStart));
 
+
+    m_kfmonitor = static_cast<KernelFunctionMonitor*>(s2e()->getPlugin(
+            "KernelFunctionMonitor"));
+    if (!m_kfmonitor) {
+        std::cerr << "Could not find KernelFunctionMonitor plug-in. " << '\n';
+        exit(0);
+    }
+    m_kfmonitor->onKernelFunctionExecutionStart.connect(sigc::mem_fun(*this, &FuzzyS2E::onKernelFunctionExecutionStart));
+
+
+    m_detector->onModuleTranslateBlockStart.connect(
+                                        sigc::mem_fun(*this, &FuzzyS2E::onModuleTranslateBlockStart));
     s2e()->getCorePlugin()->onCustomInstruction.connect(
                                         sigc::mem_fun(*this, &FuzzyS2E::onCustomInstruction));
-    s2e()->getCorePlugin()->onStateFork.connect(
-                                        sigc::mem_fun(*this, &FuzzyS2E::onStateFork));
-    s2e()->getCorePlugin()->onStateKill.connect(
-                                        sigc::mem_fun(*this, &FuzzyS2E::onStateKill));
-    s2e()->getCorePlugin()->onHandleForkAndConcretize.connect(
-                                        sigc::mem_fun(*this, &FuzzyS2E::onHandleForkAndConcretize));
-
+    m_QEMUPid = getpid();
+    m_PPid = getppid();
     if (!m_findBitMapSHM)
         m_findBitMapSHM = getAFLBitmapSHM();
-    if (!m_findVirginSHM)
-        m_findVirginSHM = getAFLVirginSHM();
     assert(m_aflBitmapSHM && "AFL's trace bits bitmap is NULL, why??");
-    assert(m_aflVirginSHM && "AFL's virgin bits bitmap is NULL, why??");
-
-    memset(m_caseGenetated, 255, AFL_BITMAP_SIZE);
+    if(!initQemuQueue())
+        exit(EXIT_FAILURE);
+    if(!initReadySHM())
+        exit(EXIT_FAILURE);
+    std::stringstream testcase_strstream;
+    testcase_strstream << "/tmp/afltestcase/" << m_QEMUPid;
+    if (::access(testcase_strstream.str().c_str(), F_OK)) // for all testcases
+        mkdir(testcase_strstream.str().c_str(), 0777);
+    if(!m_HostFiles->addDirectories(testcase_strstream.str()))
+        exit(EXIT_FAILURE);
     s2e()->getExecutor()->setSearcher(this);
 }
 
@@ -190,138 +201,6 @@ void FuzzyS2E::update(klee::ExecutionState *current,
 
 }
 
-/*
- * When find a new branch, fuzzys2e will generate a testcase for afl.
- * Indeed, we should set SMT timeout so that we will not get stuck in symbex.
- */
-void FuzzyS2E::onStateFork(S2EExecutionState *state,
-        const std::vector<S2EExecutionState*>& newStates,
-        const std::vector<klee::ref<klee::Expr> >& newConditions)
-{
-    assert(newStates.size() > 0);
-    int origID = state->getID();
-    if (!origID)
-        return;
-    int newStateIndex = (newStates[0]->getID() == origID) ? 1 : 0;
-    S2EExecutionState *new_state = newStates[newStateIndex];
-    DECLARE_PLUGINSTATE(FuzzyS2EState, new_state);
-    plgState->m_isTryState = true;
-    new_state->disableForking();
-}
-
-
-void FuzzyS2E::onStateKill(S2EExecutionState *state)
-{
-    int stateID = state->getID();
-    if(stateID && !state->m_father->getID()){
-        PathConstraint _PC;
-        klee::ConstraintManager::constraint_iterator cit = state->constraints.begin();
-        s2e()->getDebugStream(state) << "=========================\n";
-        int i = 0;
-        while(i < stateID){
-            cit++;
-            i++;
-        }
-        for(; cit != state->constraints.end(); cit++){
-            _PC.push_back(*cit);
-            s2e()->getDebugStream(state) << *cit << "\n";
-        }
-        s2e()->getDebugStream(state) << "=========================\n";
-        s2e()->getDebugStream(state).flush();
-        if (_PC.size() && state->m_symFileLen) {
-            if (m_touched_Size_Paths.find(state->m_symFileLen) == m_touched_Size_Paths.end()) {
-                TouchedPaths _tp;
-                _tp.insert(_PC);
-                m_touched_Size_Paths.insert(
-                        std::make_pair(state->m_symFileLen, _tp));
-            } else {
-                TouchedPaths _tp = m_touched_Size_Paths[state->m_symFileLen];
-                m_touched_Size_Paths.erase(state->m_symFileLen);
-                _tp.insert(_PC);
-                m_touched_Size_Paths[state->m_symFileLen] = _tp;
-            }
-        }
-        if(stateID == 1) // we only do it once
-            state->m_father->m_strSymFileName = state->m_strSymFileName;
-    }
-}
-
-void FuzzyS2E::fillConstArrayVector(S2EExecutionState *state, klee::ReadExpr* _read, ConstArray& CA)
-{
-    assert(_read->updates.root->name.compare("const_arr")>0);
-    const std::vector< klee::ref<klee::ConstantExpr> > _constantValues = _read->updates.root->constantValues;
-    /*
-    do {
-        int i = 0;
-        s2e()->getDebugStream() << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n";
-        for (; i < _read->updates.root->size; i++) {
-            klee::ref<klee::ConstantExpr> _tmp =
-                    _read->updates.root->constantValues[i];
-            s2e()->getDebugStream() << _tmp;
-            if(!((i+1)%4))
-                s2e()->getDebugStream() << "\n";
-        }
-        s2e()->getDebugStream() << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n";
-    } while (0);
-    */
-
-    int i = 0;
-    while(i<_read->updates.root->size){
-        klee::ConstantExpr *ce_0 = dyn_cast<klee::ConstantExpr>(_constantValues[i]);
-        klee::ConstantExpr *ce_1 = dyn_cast<klee::ConstantExpr>(_constantValues[i+1]);
-        klee::ConstantExpr *ce_2 = dyn_cast<klee::ConstantExpr>(_constantValues[i+2]);
-        klee::ConstantExpr *ce_3 = dyn_cast<klee::ConstantExpr>(_constantValues[i+3]);
-        uint64_t i_ce_0 =  ce_0->getZExtValue();
-        uint64_t i_ce_1 =  ce_1->getZExtValue();
-        uint64_t i_ce_2 =  ce_2->getZExtValue();
-        uint64_t i_ce_3 =  ce_3->getZExtValue();
-        CA.push_back((i_ce_3 << 24) + (i_ce_2 << 16) + (i_ce_1 << 8) + i_ce_0); // we currently only support x86
-        i+=4;
-    }
-}
-
-//HACK: Read the constant array.
-void FuzzyS2E::onHandleForkAndConcretize(S2EExecutionState *state, klee::ref<klee::Expr> address)
-{
-    int n = address.get()->getNumKids();
-    for (int i = 0; i < n; i++ ){
-        klee::ref<klee::Expr> kid = address.get()->getKid(i);
-        s2e()->getDebugStream() << "onHandleForkAndConcretize: kid is " << *(kid.get()) << "\n";
-        /*
-        if(kid->getKind() == klee::Expr::Read){
-            s2e()->getDebugStream() << "we are handling " << kid << " and CUR_CONSTARR width is " << kid.get()->getWidth() << "\n";
-            klee::ReadExpr *read = dyn_cast<klee::ReadExpr>(kid);
-            assert(read && "Cannot get Read expression?");
-            if(read->updates.root->name.compare("const_arr")>0){
-                klee::ref<klee::Expr> __index = state->concolics.evaluate(read->index.get()->getKid(1));
-                s2e()->getDebugStream() << "INDEX is " << __index << "\n";
-                if(m_ConstArray_ALLIndex.find(read->updates.root->name) != m_ConstArray_ALLIndex.end())
-                    return;
-                if(read->updates.root->isConstantArray()){
-                    ConstArray _CA;
-                    fillConstArrayVector(state,  read, _CA);
-                    int CA_it_index = 0;
-                    std::vector<ConstArray>::iterator CA_it = m_All_ConstArray.begin();
-                    for(; CA_it != m_All_ConstArray.end(); CA_it++, CA_it_index++){
-                        ConstArray __CA__ = *CA_it;
-                        if(__CA__ == _CA)
-                            break;
-                    }
-                    if(CA_it == m_All_ConstArray.end())
-                        m_All_ConstArray.push_back(_CA);
-                    m_ConstArray_ALLIndex.insert(std::make_pair(read->updates.root->name, CA_it_index));
-                }
-            }
-
-        }
-
-        onHandleForkAndConcretize(state, kid);
-        */
-
-    }
-
-}
-
 bool FuzzyS2E::empty()
 {
     return m_normalStates.empty() && m_speculativeStates.empty();
@@ -335,70 +214,55 @@ void FuzzyS2E::onModuleTranslateBlockStart(ExecutionSignal* es,
     if (!tb) {
         return;
     }
- /*
+    if(!m_mainPid)
+        m_mainPid = state->getPid(); // get pid at first time and only do it once
     if (m_mainModule == mod.Name) {
         es->connect(
         sigc::mem_fun(*this, &FuzzyS2E::slotExecuteBlockStart));
     }
-   */
-    if(m_mainModule == mod.Name){
-        m_mainPid = state->getPid();
-    }
 
 }
-
-void FuzzyS2E::onTranslateBlockStart(ExecutionSignal *signal,
-        S2EExecutionState *state, TranslationBlock *tb, uint64_t pc)
-{
-    if (!tb) {
-        return;
-    }
-    if(pc < 0xc0000000)// FIXME: we do non't want to check kernel ?
-        signal->connect(sigc::mem_fun(*this, &FuzzyS2E::slotExecuteBlockStart));
-}
-
 
 /**
  */
 void FuzzyS2E::slotExecuteBlockStart(S2EExecutionState *state, uint64_t pc)
 {
-    if(!m_mainPid || state->getPid() != m_mainPid)
+    if(!state->getID())
         return;
-    // do work here.
     DECLARE_PLUGINSTATE(FuzzyS2EState, state);
-    if (!plgState->m_isTryState)
-        plgState->updateAFLBitmapSHM(m_aflBitmapSHM, pc);
-    else {
-        /* If current state is a new created try state, we first decide whether this
-         branch has been covered, if yes, forget it, otherwise we generate a new testcase.
-         Then kill this state, let the scheduler select the original state. */
-        if (plgState->isfindNewBranch(m_caseGenetated, m_aflVirginSHM, pc)) {
-            std::stringstream str_dstFile;
-            str_dstFile << m_afl_initDir << "/" << state->getID(); // str_dstFile = /path/to/afl/initDir/ID
-            Path dstFile(str_dstFile.str());
-            std::string errMsg;
-            if (dstFile.createFileOnDisk(&errMsg)) {
-                s2e()->getDebugStream() << errMsg << "\n";
-                s2e()->getDebugStream().flush();
-            } else {
-                if(generateCaseFile(state, dstFile)){
-                    // after we successfully generate the testcase, we should record it.
-                    state->m_father->m_forkedfromMe++;
-                    plgState->updateCaseGenetated(m_caseGenetated, pc);
-                }
-            }
-        }
-        // As we have defined the searcher's behavior, so after we terminate this state, the non-zero state will be selected.
-        s2e()->getExecutor()->terminateStateEarly(*state, "FuzzySearcher: terminate this for fuzzing");
-    }
+    plgState->updateAFLBitmapSHM(m_aflBitmapSHM, pc);
+}
+
+void FuzzyS2E::onKernelFunctionExecutionStart(S2EExecutionState* state, KernelFunctionMonitor::KERNELFUNCS func)
+{
+    if (func != KernelFunctionMonitor::DO_EXIT) // focus on do_exit
+        return;
+    if(m_mainPid != state->getPid())
+        return; // ignore other exit signal
+    uint32_t code;
+    state->readCpuRegisterConcrete(CPU_OFFSET(regs[R_EAX]), &code, 4);
+    s2e()->getDebugStream() << "[A] Process " << state->getPid() <<  " is unloading, code is " << code << "\n";
+    if(WIFSIGNALED(code))
+        m_fault = FAULT_CRASH;
+    return;
 }
 
 bool FuzzyS2E::getAFLBitmapSHM()
 {
     m_aflBitmapSHM = NULL;
     key_t shmkey;
+    std::stringstream tracebits_strstream;
+    tracebits_strstream << "/tmp/afltracebits/trace_" << m_QEMUPid;
+    Path bitmap_file(tracebits_strstream.str().c_str());
+    std::string errmsg;
+    if(bitmap_file.createFileOnDisk(&errmsg)){
+        s2e()->getDebugStream() << "FuzzyS2E: createFileOnDisk() error: "
+                            << errmsg << "\n";
+        exit(-1);
+    }
+
     do {
-        if ((shmkey = ftok("/tmp/aflbitmap", 1)) < 0) {
+        if ((shmkey = ftok(bitmap_file.c_str(), 1)) < 0) {
             s2e()->getDebugStream() << "FuzzyS2E: ftok() error: "
                     << strerror(errno) << "\n";
             return false;
@@ -431,45 +295,54 @@ bool FuzzyS2E::getAFLBitmapSHM()
     return true;
 }
 
-bool FuzzyS2E::getAFLVirginSHM()
+bool FuzzyS2E::initQemuQueue()
 {
-    m_aflVirginSHM = NULL;
-    key_t shmkey;
-    do {
-        if ((shmkey = ftok("/tmp/aflvirgin", 'a')) < 0) {
-            s2e()->getDebugStream() << "FuzzyS2E: ftok() error: "
-                    << strerror(errno) << "\n";
+    int res;
+    if (access(QEMUQUEUE, F_OK) == -1) {
+        res = mkfifo(QEMUQUEUE, 0777);
+        if (res != 0) {
+            s2e()->getDebugStream() << "Could not create fifo " << QEMUQUEUE << ".\n";
             return false;
         }
-        int shm_id;
-        try {
-            shm_id = shmget(shmkey, AFL_BITMAP_SIZE, 0600);
-            if (shm_id < 0) {
-                s2e()->getDebugStream() << "FuzzyS2E: shmget() error: "
-                        << strerror(errno) << "\n";
-                return false;
-            }
-            void * afl_area_ptr = shmat(shm_id, NULL, 0);
-            if (afl_area_ptr == (void*) -1) {
-                s2e()->getDebugStream() << "FuzzyS2E: shmat() error: "
-                        << strerror(errno) << "\n";
-                exit(1);
-            }
-            m_aflVirginSHM = (unsigned char*) afl_area_ptr;
-            m_findVirginSHM = true;
-            m_virgin_shmID = shm_id;
-            if (m_verbose) {
-                s2e()->getDebugStream() << "FuzzyS2E: Virgin bits share memory id is "
-                        << shm_id << "\n";
-            }
-        } catch (...) {
-            s2e()->getDebugStream() << "FuzzyS2E: getAFLVirginSHM failed, unknown reason.\n";
-            return false;
-        }
-    } while (0);
+    }
+    m_queueFd = open(QEMUQUEUE, O_WRONLY | O_NONBLOCK);
+
+    if (m_queueFd == -1)
+    {
+        s2e()->getDebugStream() << "Could not open fifo " << QEMUQUEUE << ".\n";
+        return false;
+    }
+    // after the queue is initialized, write OK to FIFO
+    assert(m_QEMUPid);
+    char buffer[FIFOBUFFERSIZE + 1];
+    memset(buffer, '\0', FIFOBUFFERSIZE + 1);
+    sprintf(buffer, "%d", m_QEMUPid);
+    res = write(m_queueFd, buffer, FIFOBUFFERSIZE);
+    if (res == -1)
+    {
+        s2e()->getDebugStream() << "Write error on pipe\n";
+        exit(EXIT_FAILURE);
+    }
     return true;
 }
 
+bool FuzzyS2E::initReadySHM()
+{
+    void *shm = NULL;
+    int shmid;
+    shmid = shmget((key_t) READYSHMID, sizeof(ReadyShm), 0666);
+    if (shmid == -1) {
+        fprintf(stderr, "shmget failed\n");
+        return false;
+    }
+    shm = shmat(shmid, (void*) 0, 0);
+    if (shm == (void*) -1) {
+        fprintf(stderr, "shmat failed\n");
+        return false;
+    }
+    readyshm = (ReadyShm*) shm;
+    return true;
+}
 
 bool FuzzyS2E::generateCaseFile(S2EExecutionState *state,
         Path destfilename)
@@ -579,9 +452,8 @@ void FuzzyS2E::waitforafltestcase(void)
     char tmp[4];
     char err[128];
     int len;
-wait:
     do{
-        len = ::read(AFLS2EHOSTPIPE_AFL, tmp, 4);
+        len = ::read(CTRLPIPE(m_QEMUPid), tmp, 4);
         if(len == -1){
             if(errno == EINTR)
                 continue;
@@ -596,137 +468,31 @@ wait:
         s2e()->getDebugStream() << "FuzzyS2E: we cannot read pipe, length is " << len << ", error is "<< err << "\n";
         exit(2); // we want block here, why not ?
     }
-    if(findPathFast(g_s2e_state)){
-        char tmp[4];
-        tmp[0] = 'n';
-        tmp[1] = 'u';
-        tmp[2] = 'd';
-        tmp[3] = 't';
-        write(AFLS2EHOSTPIPE_S2E + 1, tmp, sizeof(tmp)); // tell AFL we have finish a test procedure
-        goto wait;
-    }else{
-        s2e()->getDebugStream() << "May find a new branch testcase?"<< '\n';
-    }
 }
 
-void FuzzyS2E::replaceReadExprbyConstant(S2EExecutionState *state, klee::ref<klee::Expr> * expr, unsigned char *testcase, bool hasConst_Addr)
+// Write OK signal to queue to notify AFL that guest is ready (message is qemu's pid).
+void FuzzyS2E::TellAFL(void) // mark this as an atom procedure, i.e. should NOT be interrupted
 {
-    int n = expr->get()->getNumKids();
-    klee::ref<klee::Expr> *kids = new klee::ref<klee::Expr> [n];
-    for (int i = 0; i < n; i++) {
-        klee::ref<klee::Expr> kid = expr->get()->getKid(i);
-        if(kid->getKind() == klee::Expr::Read){
-            klee::ReadExpr *read = dyn_cast<klee::ReadExpr>(expr->get()->getKid(i));
-            assert(read && "Cannot get Read expression?");
-            if(read->updates.root->name.compare("const_arr")>0){ //FIXME: hack here, don't know why
-                hasConst_Addr = true;
-                read->print(s2e()->getDebugStream());
-                if(read->updates.root->isSymbolicArray()){
-                    s2e()->getDebugStream() << "read is symbolic array\n";
-                }else if(read->updates.root->isConstantArray()){
-                    klee::ref<klee::Expr> evalResult = state->concolics.evaluate(read->index);
-                    klee::ConstantExpr *index = dyn_cast<klee::ConstantExpr>(evalResult);
-                    s2e()->getDebugStream() << "read is constant array, and index is \n";
-                    if (index)
-                        index->print(s2e()->getDebugStream());
-                    else
-                        evalResult.get()->print(s2e()->getDebugStream());
-                    s2e()->getDebugStream() << "\n";
-                    int i = 0;
-                    for(; i < read->updates.root->size; i++){
-                        klee::ref<klee::ConstantExpr> _tmp = read->updates.root->constantValues[i];
-                        s2e()->getDebugStream() << _tmp;
-                    }
-                    s2e()->getDebugStream() << "constant array read end\n";
-                }
-                return;
-            }
-        }
-        if(kid->getNumKids())
-            replaceReadExprbyConstant(state, &kid, testcase, hasConst_Addr);
-        if(kid->getKind() == klee::Expr::Read){
-            klee::ReadExpr *read = dyn_cast<klee::ReadExpr>(expr->get()->getKid(i));
-            klee::ConstantExpr *index = dyn_cast<klee::ConstantExpr>(read->index);
-            klee::ref<klee::ConstantExpr> testcase_byte = klee::ConstantExpr::create(testcase[index->getZExtValue()], read->getWidth());
-            kids[i] = testcase_byte;
-        }else{
-            kids[i] = kid;
-        }
-
-    }
-    *expr = expr->get()->rebuild(kids);
-//    delete kids;
-}
-
-bool FuzzyS2E::findPathFast(S2EExecutionState *state)
-{
-    Path template_file("/tmp/aa.jpeg");
-    //try to solve the constraint and write the result to destination file
-    int fd = open(template_file.c_str(), O_RDWR);
-    if (fd < 0) {
-        s2e()->getDebugStream() << "could not open dest file: "
-                << template_file.c_str() << "\n";
-        close(fd);
-        return false;
-    }
-    /* Determine the size of the file */
-    off_t size = lseek(fd, 0, SEEK_END);
-    if (size < 0) {
-        s2e()->getDebugStream() << "could not determine the size of :"
-                << template_file.c_str() << "\n";
-        close(fd);
-        return false;
-    }
-    if(m_touched_Size_Paths.find(size) == m_touched_Size_Paths.end()){
-        close(fd);
-        s2e()->getDebugStream() << "Try to dry run because it is a new file size: " << size << "\n";
-        return false;
-    }
-    lseek(fd, 0, SEEK_SET);
-    unsigned char *testcase = new unsigned char [size];
-    ::read(fd, testcase, size);
-    close(fd);
-
-    std::set<PathConstraint>::iterator it_path;
-    TouchedPaths touched_paths = m_touched_Size_Paths[size];
-
-    for(it_path = touched_paths.begin(); it_path != touched_paths.end(); it_path++){
-        PathConstraint _curPath = *it_path;
-        std::vector< klee::ref<klee::Expr> >::iterator it_condition = _curPath.begin();
-        for(; it_condition != _curPath.end(); it_condition++){
-            klee::ref<klee::Expr> _condition = *it_condition;
-            bool hasConst_Addr = false;
-            replaceReadExprbyConstant(state, &_condition, testcase, hasConst_Addr);
-            if(hasConst_Addr)
-                continue;
-            else{
-                klee::ConstantExpr *ce = dyn_cast<klee::ConstantExpr>(_condition);
-//                assert(ce && "Could not evaluate the expression to a constant.");
-                if (!ce) {
-                    s2e()->getDebugStream()
-                            << "Could not evaluate the expression: "
-                            << _condition << "\n";
-                    s2e()->getDebugStream().flush();
-                    continue;
-                }
-                if (ce->isTrue()) {
-                    //satisfy this branch, let's get next branch
-                    continue;
-                } else {
-                    //let's get another path to test
-                    break;
-                }
-            }
-        }
-        if(it_condition == _curPath.end()){// found a touched path
-            delete testcase;
-            return true;
-        }
-    }
-    delete testcase;
-    s2e()->getDebugStream() << "********************************************\n";
+    m_SS.acquire(); // synchronization
+    readyshm->writable_mask = 0;
+    readyshm->pid = m_QEMUPid;
+    readyshm->fault = m_fault;
+    m_fault = FAULT_NONE;
+    s2e()->getDebugStream() << "Sending SIGUSR2 to process " << m_PPid << ".\n";
     s2e()->getDebugStream().flush();
-    return false;
+    kill(m_PPid, SIGUSR2); // NOTE: This MUST be done BEFORE writing queue, otherwise qemu->out_file will be flushed to NULL after write_to_tescase.
+    m_SS.release();
+    assert(m_queueFd > 0 && "Haven't seen qemu queue yet?");
+    char buffer[FIFOBUFFERSIZE + 1];
+    memset(buffer, '\0', FIFOBUFFERSIZE + 1);
+    sprintf(buffer, "%d", m_QEMUPid);
+    int res = write(m_queueFd, buffer, FIFOBUFFERSIZE);
+    if (res == -1)
+    {
+        s2e()->getDebugStream() << "Write error on pipe, qemu is going to die...\n";
+        s2e()->getDebugStream().flush();
+        exit(EXIT_FAILURE);
+    }
 }
 
 void FuzzyS2E::onCustomInstruction(
@@ -740,33 +506,26 @@ void FuzzyS2E::onCustomInstruction(
 
     uint64_t subfunction = OPCODE_GETSUBFUNCTION(operand);
 
-    switch(subfunction) {
-        case 0: {
+    switch (subfunction) {
+        case 0x0: {
             // Guest wants us to wait for AFL's testcase, so let's wait.
-                waitforafltestcase();
-                break;
-            }
+            waitforafltestcase();
+            break;
+        }
+        case 0x1: {
+            // Guest wants us to notify AFL that it has finished a test
+            TellAFL();
+            break;
+        }
         default: {
-                s2e()->getWarningsStream(state)
-                        << "Invalid FuzzyS2E opcode " << hexval(operand)  << '\n';
-                break;
+            s2e()->getWarningsStream(state) << "Invalid FuzzyS2E opcode "
+                    << hexval(operand) << '\n';
+            break;
         }
     }
 
 }
 
-
-
-void FuzzyS2EState::updateCaseGenetated(unsigned char* caseGenerated,
-        uint64_t curBBpc)
-{
-    uint64_t cur_location = (curBBpc >> 4) ^ (curBBpc << 8);
-    cur_location &= AFL_BITMAP_SIZE - 1;
-    if (cur_location >= AFL_BITMAP_SIZE)
-        return;
-    caseGenerated[cur_location ^ m_prev_loc] = 0;
-    m_prev_loc = cur_location >> 1;
-}
 
 bool FuzzyS2EState::updateAFLBitmapSHM(unsigned char* AflBitmap,
         uint64_t curBBpc)
@@ -780,29 +539,11 @@ bool FuzzyS2EState::updateAFLBitmapSHM(unsigned char* AflBitmap,
     return true;
 }
 
-/*
-  There are two types of old branch:
-  1. Forked and case-generated by S2E
-  2. Executed by S2E/AFL
- */
-bool FuzzyS2EState::isfindNewBranch(unsigned char* CaseGenetated, unsigned char* Virgin_bitmap,
-        uint64_t curBBpc)
-{
-    uint64_t cur_location = (curBBpc >> 4) ^ (curBBpc << 8);
-    cur_location &= AFL_BITMAP_SIZE - 1;
-    g_s2e->getDebugStream() << "cur_location is " << cur_location << ", and virgin map here is " << hexval(Virgin_bitmap[cur_location ^ m_prev_loc]) <<
-            ", and CaseGenetated here is " << hexval(CaseGenetated[cur_location ^ m_prev_loc]) << "\n";
-    if (cur_location >= AFL_BITMAP_SIZE)
-        return false;
-    return Virgin_bitmap[cur_location ^ m_prev_loc] && CaseGenetated[cur_location ^ m_prev_loc];
-}
-
 FuzzyS2EState::FuzzyS2EState()
 {
     m_plugin = NULL;
     m_state = NULL;
     m_prev_loc = 0;
-    m_isTryState = false;
 }
 
 FuzzyS2EState::FuzzyS2EState(S2EExecutionState *s, Plugin *p)
@@ -810,7 +551,6 @@ FuzzyS2EState::FuzzyS2EState(S2EExecutionState *s, Plugin *p)
     m_plugin = static_cast<FuzzyS2E*>(p);
     m_state = s;
     m_prev_loc = 0;
-    m_isTryState = false;
 }
 
 FuzzyS2EState::~FuzzyS2EState()

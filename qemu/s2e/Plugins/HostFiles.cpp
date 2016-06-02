@@ -83,6 +83,16 @@ void HostFiles::initialize()
             sigc::mem_fun(*this, &HostFiles::onCustomInstruction));
 }
 
+bool HostFiles::addDirectories(std::string _Dir)
+{
+    if (!llvm::sys::fs::exists(_Dir)) {
+        s2e()->getWarningsStream() << "Path " << _Dir << " does not exist\n";
+        return false;
+    }
+    m_baseDirectories.push_back(_Dir);
+    return true;
+}
+
 void HostFiles::open(S2EExecutionState *state)
 {
     target_ulong fnamePtr = 0, flags = 0;

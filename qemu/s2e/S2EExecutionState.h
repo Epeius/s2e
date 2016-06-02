@@ -119,7 +119,6 @@ public:
 	bool m_isfuzzymode;
 	int m_forkedfromMe;
 	S2EExecutionState* m_father; //specify the father
-	klee::WallTimer *ExecTimer;
 	std::string m_strSymFileName;
 	uint64_t m_symFileLen;
 protected:

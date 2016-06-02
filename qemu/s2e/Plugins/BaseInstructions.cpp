@@ -208,28 +208,12 @@ void BaseInstructions::killState(S2EExecutionState *state)
     }
 
     //Kill the current state
-    s2e()->getMessagesStream(state) << "Killing state "  << state->getID() << '\n';
-    if(state->ExecTimer)
-        s2e()->getMessagesStream(state) << "State "  << state->getID() << " has ran for " << state->ExecTimer->check() << " us\n";
     std::ostringstream os;
     os << "State was terminated by opcode\n"
        << "            message: \"" << message << "\"\n"
        << "            status: " << status;
 
     s2e()->getExecutor()->terminateStateEarly(*state, os.str());
-}
-
-
-void BaseInstructions::TellAFL(S2EExecutionState *state)
-{
-    char tmp[4];
-    tmp[0] = 'n';
-    tmp[1] = 'u';
-    tmp[2] = 'd';
-    tmp[3] = 't';
-    write(AFLS2EHOSTPIPE_S2E + 1, tmp, sizeof(tmp)); // tell AFL we have finish a test procedure
-    s2e()->getMessagesStream(state) << "I have told AFL that I am done, so what?"<< '\n';
-    return;
 }
 
 
@@ -260,8 +244,6 @@ void BaseInstructions::forkState(S2EExecutionState *state)
     fs->m_is_carry_on_state = false;
 
     m_current_conditon++;
-
-    s2e()->getMessagesStream(state) << "we forked a new state on state "  << state->getID() << '\n';
 
     return;
 }
@@ -616,11 +598,6 @@ void BaseInstructions::handleBuiltInOps(S2EExecutionState* state, uint64_t opcod
         // add by epeius in order to control fork in guest
         case 0x12: {/* s2e_fork_state */
             forkState(state);
-            break;
-        }
-
-        case 0x13: {
-            TellAFL(state);
             break;
         }
 

@@ -302,14 +302,6 @@ static inline void s2e_fork_state(void)
         );
 }
 
-/** Tell alf we finish. */
-static inline void s2e_tell_afl(void)
-{
-    __asm__ __volatile__(
-        S2E_INSTRUCTION_SIMPLE(13)
-    );
-}
-
 /** Disable timer interrupt in the guest. */
 static inline void s2e_disable_timer_interrupt(void)
 {
@@ -454,6 +446,15 @@ static inline int s2e_wait_afl_testcase(void)
             S2E_INSTRUCTION_SIMPLE(EA) // EA 00 indicates waitting for AFL
     );
 }
+
+/** Tell afl we finish. */
+static inline void s2e_tell_afl(void)
+{
+    __asm__ __volatile__(
+            S2E_INSTRUCTION_COMPLEX(EA, 01) // EA 01 indicates tell afl we are done
+    );
+}
+
 
 /** Enable memory tracing */
 static inline void s2e_memtracer_enable(void)

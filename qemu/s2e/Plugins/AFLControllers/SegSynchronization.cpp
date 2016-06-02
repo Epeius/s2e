@@ -45,9 +45,12 @@ int SegSynchronization::release(void)
     v_buf.sem_op = 1;    //add segmo +1
     v_buf.sem_flg = SEM_UNDO;
 
-    if (semop(m_semid, &v_buf, 1) == -1) {
-        perror("v(semid)failed");
-        exit(1);
+    int rc;
+    while ((rc = semop(m_semid, &v_buf, 1)) == -1) {
+        if (errno != EINTR) {
+            perror("v(semid)failed");
+            exit(1);
+        }
     }
     return (0);
 }
@@ -60,9 +63,12 @@ int SegSynchronization::acquire(void)
     p_buf.sem_op = -1;        //decrease 1
     p_buf.sem_flg = SEM_UNDO;
 
-    if (semop(m_semid, &p_buf, 1) == -1) {
-        perror("p(semid)failed");
-        exit(1);
+    int rc;
+    while ((rc = semop(m_semid, &p_buf, 1)) == -1) {
+        if (errno != EINTR) {
+            perror("p(semid)failed");
+            exit(1);
+        }
     }
     return (0);
 }

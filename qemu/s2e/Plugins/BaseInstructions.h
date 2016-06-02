@@ -63,7 +63,6 @@ private:
     void forkState(S2EExecutionState *state);
     void isSymbolic(S2EExecutionState *state);
     void killState(S2EExecutionState *state);
-    void TellAFL(S2EExecutionState *state);
     void printExpression(S2EExecutionState *state);
     void printMessage(S2EExecutionState *state, bool isWarning);
     void printMemory(S2EExecutionState *state);

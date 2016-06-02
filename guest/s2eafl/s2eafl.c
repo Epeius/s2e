@@ -204,12 +204,14 @@ static int copy_file(const char *directory, const char *guest_file)
         fprintf(stderr, "cannot create file %s\n", path);
         exit(1);
     }
-
+    /*
     if(is1sttime){
         while (!s2e_find(guest_file))
-            SLEEP(0.0001); //FIXME: HACK here
+            SLEEP(0.0001); //FIXME: HACK here to make sure the pipe has been built OK, \
+                                otherwise s2e_wait_afl_testcase() will generate a crash.
         is1sttime = 0;
     }else
+    */
         s2e_wait_afl_testcase();
 
     int s2e_fd = s2e_open(guest_file);

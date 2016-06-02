@@ -75,6 +75,12 @@ public:
 
     void initialize();
 
+    /*
+     * add a method to modify m_baseDirectories in run-time
+     * return True if success, False otherwise
+     */
+    bool addDirectories(std::string);
+
 private:
     //bool m_allowWrite;
     std::vector<std::string> m_baseDirectories;
