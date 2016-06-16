@@ -84,7 +84,6 @@ void FuzzyS2E::initialize()
             "MainModule", &ok);
     m_afl_initDir = s2e()->getConfig()->getString(cfgkey + ".aflInitDir",
             "INIT", &ok);
-    m_SS.initsem(SMKEY);
     m_detector = static_cast<ModuleExecutionDetector*>(s2e()->getPlugin(
             "ModuleExecutionDetector"));
     if (!m_detector) {
@@ -113,9 +112,9 @@ void FuzzyS2E::initialize()
     if (!m_findBitMapSHM)
         m_findBitMapSHM = getAFLBitmapSHM();
     assert(m_aflBitmapSHM && "AFL's trace bits bitmap is NULL, why??");
-    if(!initQemuQueue())
-        exit(EXIT_FAILURE);
     if(!initReadySHM())
+        exit(EXIT_FAILURE);
+    if(!initQemuQueue())
         exit(EXIT_FAILURE);
     std::stringstream testcase_strstream;
     testcase_strstream << "/tmp/afltestcase/" << m_QEMUPid;
@@ -123,6 +122,7 @@ void FuzzyS2E::initialize()
         mkdir(testcase_strstream.str().c_str(), 0777);
     if(!m_HostFiles->addDirectories(testcase_strstream.str()))
         exit(EXIT_FAILURE);
+
     s2e()->getExecutor()->setSearcher(this);
 }
 
@@ -227,8 +227,25 @@ void FuzzyS2E::onModuleTranslateBlockStart(ExecutionSignal* es,
  */
 void FuzzyS2E::slotExecuteBlockStart(S2EExecutionState *state, uint64_t pc)
 {
-    if(!state->getID())
+    if (!state->getID())
         return;
+    if (pc > 0xc000000) // Ignore kernel module in order to compare with vanilla AFL
+        return;
+    // DEBUG purpose, to find the duplicate testcases
+    if (0) {
+        std::stringstream traceBB_strstream;
+        traceBB_strstream << "/tmp/afltraceBB/" << m_QEMUPid << ".BB";
+        Path traceBB_file(traceBB_strstream.str().c_str());
+        m_traceBBfile = &traceBB_file;
+        if (::access(m_traceBBfile->c_str(), F_OK)) // for all testcases
+            m_traceBBfile->createFileOnDisk();
+        int traceBBfilefd = open(m_traceBBfile->c_str(), O_RDWR | O_APPEND);
+        char strBB[24];
+        sprintf(strBB, "0x%08x\n", (uint32_t) pc);
+        write(traceBBfilefd, &strBB, strlen(strBB));
+        close(traceBBfilefd);
+    }
+    // DEBUG end.
     DECLARE_PLUGINSTATE(FuzzyS2EState, state);
     plgState->updateAFLBitmapSHM(m_aflBitmapSHM, pc);
 }
@@ -242,8 +259,10 @@ void FuzzyS2E::onKernelFunctionExecutionStart(S2EExecutionState* state, KernelFu
     uint32_t code;
     state->readCpuRegisterConcrete(CPU_OFFSET(regs[R_EAX]), &code, 4);
     s2e()->getDebugStream() << "[A] Process " << state->getPid() <<  " is unloading, code is " << code << "\n";
-    if(WIFSIGNALED(code))
-        m_fault = FAULT_CRASH;
+    if(WIFSIGNALED(code)){
+        DECLARE_PLUGINSTATE(FuzzyS2EState, state);
+        plgState->m_fault = FAULT_CRASH;
+    }
     return;
 }
 
@@ -316,7 +335,7 @@ bool FuzzyS2E::initQemuQueue()
     assert(m_QEMUPid);
     char buffer[FIFOBUFFERSIZE + 1];
     memset(buffer, '\0', FIFOBUFFERSIZE + 1);
-    sprintf(buffer, "%d", m_QEMUPid);
+    sprintf(buffer, "%d|%d|%lu", m_QEMUPid, FAULT_NONE, (uint64_t)0);
     res = write(m_queueFd, buffer, FIFOBUFFERSIZE);
     if (res == -1)
     {
@@ -330,7 +349,7 @@ bool FuzzyS2E::initReadySHM()
 {
     void *shm = NULL;
     int shmid;
-    shmid = shmget((key_t) READYSHMID, sizeof(ReadyShm), 0666);
+    shmid = shmget((key_t) READYSHMID, sizeof(uint8_t)*65536, 0666);
     if (shmid == -1) {
         fprintf(stderr, "shmget failed\n");
         return false;
@@ -340,7 +359,7 @@ bool FuzzyS2E::initReadySHM()
         fprintf(stderr, "shmat failed\n");
         return false;
     }
-    readyshm = (ReadyShm*) shm;
+    m_ReadyArray = (uint8_t*) shm;
     return true;
 }
 
@@ -471,21 +490,21 @@ void FuzzyS2E::waitforafltestcase(void)
 }
 
 // Write OK signal to queue to notify AFL that guest is ready (message is qemu's pid).
-void FuzzyS2E::TellAFL(void) // mark this as an atom procedure, i.e. should NOT be interrupted
+void FuzzyS2E::TellAFL(S2EExecutionState *state) // mark this as an atom procedure, i.e. should NOT be interrupted
 {
-    m_SS.acquire(); // synchronization
-    readyshm->writable_mask = 0;
-    readyshm->pid = m_QEMUPid;
-    readyshm->fault = m_fault;
-    m_fault = FAULT_NONE;
-    s2e()->getDebugStream() << "Sending SIGUSR2 to process " << m_PPid << ".\n";
-    s2e()->getDebugStream().flush();
-    kill(m_PPid, SIGUSR2); // NOTE: This MUST be done BEFORE writing queue, otherwise qemu->out_file will be flushed to NULL after write_to_tescase.
-    m_SS.release();
+    assert(!m_ReadyArray[m_QEMUPid] && "I'm free before? ");
+    m_ReadyArray[m_QEMUPid] = 1;
+    DECLARE_PLUGINSTATE(FuzzyS2EState, state);
     assert(m_queueFd > 0 && "Haven't seen qemu queue yet?");
     char buffer[FIFOBUFFERSIZE + 1];
     memset(buffer, '\0', FIFOBUFFERSIZE + 1);
-    sprintf(buffer, "%d", m_QEMUPid);
+    if(!plgState->m_ExecTime){
+        s2e()->getDebugStream() << "Cannot get execute time ?\n";
+        s2e()->getDebugStream().flush();
+        exit(EXIT_FAILURE);
+    }
+    uint64_t m_ellapsetime = plgState->m_ExecTime->check();
+    sprintf(buffer, "%d|%d|%lu", m_QEMUPid, plgState->m_fault, m_ellapsetime);
     int res = write(m_queueFd, buffer, FIFOBUFFERSIZE);
     if (res == -1)
     {
@@ -514,7 +533,7 @@ void FuzzyS2E::onCustomInstruction(
         }
         case 0x1: {
             // Guest wants us to notify AFL that it has finished a test
-            TellAFL();
+            TellAFL(state);
             break;
         }
         default: {
@@ -528,9 +547,9 @@ void FuzzyS2E::onCustomInstruction(
 
 
 bool FuzzyS2EState::updateAFLBitmapSHM(unsigned char* AflBitmap,
-        uint64_t curBBpc)
+        uint32_t curBBpc)
 {
-    uint64_t cur_location = (curBBpc >> 4) ^ (curBBpc << 8);
+    uint32_t cur_location = (curBBpc >> 4) ^ (curBBpc << 8);
     cur_location &= AFL_BITMAP_SIZE - 1;
     if (cur_location >= AFL_BITMAP_SIZE)
         return false;
@@ -544,6 +563,8 @@ FuzzyS2EState::FuzzyS2EState()
     m_plugin = NULL;
     m_state = NULL;
     m_prev_loc = 0;
+    m_ExecTime = new klee::WallTimer();
+    m_fault = FAULT_NONE;
 }
 
 FuzzyS2EState::FuzzyS2EState(S2EExecutionState *s, Plugin *p)
@@ -551,10 +572,16 @@ FuzzyS2EState::FuzzyS2EState(S2EExecutionState *s, Plugin *p)
     m_plugin = static_cast<FuzzyS2E*>(p);
     m_state = s;
     m_prev_loc = 0;
+    if (m_ExecTime)
+        delete m_ExecTime;
+    m_ExecTime = new klee::WallTimer(); // we want a new timer
+    m_fault = FAULT_NONE;
 }
 
 FuzzyS2EState::~FuzzyS2EState()
 {
+    if (m_ExecTime)
+        delete m_ExecTime;
 }
 
 PluginState *FuzzyS2EState::clone() const

@@ -51,7 +51,6 @@
 #include <llvm/Support/Path.h>
 
 #include <s2e/Plugins/LinuxInterceptor/KernelFunctionMonitor.h>
-#include "SegSynchronization.h"
 #include <s2e/Plugins/X86ExceptionInterceptor.h>
 
 using namespace llvm::sys;
@@ -66,14 +65,16 @@ public:
     S2EExecutionState *m_state;
 public:
     //in order to improve efficiency, we write the branches of S2E to AFL's bitmap
-    uint64_t m_prev_loc; //previous location when executing
+    uint32_t m_prev_loc; //previous location when executing
+    klee::WallTimer *m_ExecTime;
+    uint8_t m_fault;
     FuzzyS2EState();
     FuzzyS2EState(S2EExecutionState *s, Plugin *p);
     virtual ~FuzzyS2EState();
     virtual PluginState *clone() const;
     static PluginState *factory(Plugin *p, S2EExecutionState *s);
 
-    inline bool updateAFLBitmapSHM(unsigned char* bitmap, uint64_t pc);
+    inline bool updateAFLBitmapSHM(unsigned char* bitmap, uint32_t pc);
 
 
     friend class FuzzyS2E;
@@ -94,14 +95,6 @@ public:
 #define CTRLPIPE(_x) (_x + 226)
 // Share memory ID
 #define READYSHMID 1234
-
-// Share memory structure, used to transmit information
-typedef struct _readyShm
-{
-    uint8_t  writable_mask;      // mask, non-zero means writable, zero means readable, used for simple synchronization?
-    uint32_t pid;                // Information: tells which qemu is done.
-    uint8_t  fault;              // Executation fault like FAULT_CRASH
-}ReadyShm;
 
 enum {
   /* 00 */ FAULT_NONE,
@@ -128,7 +121,7 @@ private:
     bool getAFLBitmapSHM();
     bool initQemuQueue();
     bool initReadySHM();
-    void TellAFL();
+    void TellAFL(S2EExecutionState *state);
 
 public:
     struct SortById
@@ -184,25 +177,24 @@ public:
     // AFL end
     std::string m_mainModule;	//main module name (i.e. target binary)
     uint64_t m_mainPid;         //main process PID
-    uint8_t m_fault;
     unsigned char m_caseGenetated[AFL_BITMAP_SIZE]; // branches we have generated case
 
     int m_shmID;
     uint32_t m_QEMUPid;
     uint32_t m_PPid;
     int m_queueFd;
-    ReadyShm* readyshm;
-    SegSynchronization m_SS;
+    uint8_t* m_ReadyArray;
     bool m_verbose; //verbose debug output
     HostFiles* m_HostFiles;
+    Path* m_traceBBfile;
 public:
     FuzzyS2E(S2E* s2e) :
             Plugin(s2e)
     {
         m_detector = NULL;
+        m_traceBBfile = NULL;
         m_shmID = 0;
         m_mainPid = 0;
-        m_fault = FAULT_NONE;
         m_QEMUPid = 0;
         m_queueFd = -1;
         m_aflBitmapSHM = 0;
