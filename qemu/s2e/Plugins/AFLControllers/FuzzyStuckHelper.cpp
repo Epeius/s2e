@@ -30,7 +30,7 @@
  *
  */
 
-#include "FuzzyS2E.h"
+#include "FuzzyStuckHelper.h"
 extern "C" {
 #include <qemu-common.h>
 #include <cpu-all.h>
@@ -66,13 +66,13 @@ extern int errno;
 namespace s2e {
 namespace plugins {
 
-S2E_DEFINE_PLUGIN(FuzzyS2E, "FuzzyS2E plugin", "FuzzyS2E",
-        "ModuleExecutionDetector", "HostFiles", "KernelFunctionMonitor");
+S2E_DEFINE_PLUGIN(FuzzyStuckHelper, "FuzzyStuckHelper plugin", "FuzzyStuckHelper",
+        "ModuleExecutionDetector", "HostFiles");
 
-FuzzyS2E::~FuzzyS2E()
+FuzzyStuckHelper::~FuzzyStuckHelper()
 {
 }
-void FuzzyS2E::initialize()
+void FuzzyStuckHelper::initialize()
 {
     bool ok = false;
     std::string cfgkey = getConfigKey();
@@ -90,45 +90,31 @@ void FuzzyS2E::initialize()
         std::cerr << "Could not find ModuleExecutionDetector plug-in. " << '\n';
         exit(0);
     }
-    m_detector->onModuleTranslateBlockStart.connect(
-                                        sigc::mem_fun(*this, &FuzzyS2E::onModuleTranslateBlockStart));
-
-
-    m_kfmonitor = static_cast<KernelFunctionMonitor*>(s2e()->getPlugin(
-            "KernelFunctionMonitor"));
-    if (!m_kfmonitor) {
-        std::cerr << "Could not find KernelFunctionMonitor plug-in. " << '\n';
-        exit(0);
-    }
-    m_kfmonitor->onKernelFunctionExecutionStart.connect(sigc::mem_fun(*this, &FuzzyS2E::onKernelFunctionExecutionStart));
-
 
     m_detector->onModuleTranslateBlockStart.connect(
-                                        sigc::mem_fun(*this, &FuzzyS2E::onModuleTranslateBlockStart));
+                                        sigc::mem_fun(*this, &FuzzyStuckHelper::onModuleTranslateBlockStart));
     s2e()->getCorePlugin()->onCustomInstruction.connect(
-                                        sigc::mem_fun(*this, &FuzzyS2E::onCustomInstruction));
+                                        sigc::mem_fun(*this, &FuzzyStuckHelper::onCustomInstruction));
+    s2e()->getCorePlugin()->onStateFork.connect(
+                                            sigc::mem_fun(*this, &FuzzyStuckHelper::onStateFork));
     m_QEMUPid = getpid();
-    m_PPid = getppid();
-    if (!m_findBitMapSHM)
-        m_findBitMapSHM = getAFLBitmapSHM();
-    assert(m_aflBitmapSHM && "AFL's trace bits bitmap is NULL, why??");
-    if(!initReadySHM())
-        exit(EXIT_FAILURE);
-    if(!initQemuQueue())
-        exit(EXIT_FAILURE);
+    if (!m_findVirginSHM)
+        m_findVirginSHM = getAFLVirginSHM();
+    assert(m_aflVirginSHM && "AFL's virgin bits bitmap is NULL, why??");
+
     std::stringstream testcase_strstream;
     testcase_strstream << "/tmp/afltestcase/" << m_QEMUPid;
     if (::access(testcase_strstream.str().c_str(), F_OK)) // for all testcases
         mkdir(testcase_strstream.str().c_str(), 0777);
     if(!m_HostFiles->addDirectories(testcase_strstream.str()))
         exit(EXIT_FAILURE);
-
+    memset(m_caseGenetated, 255, AFL_BITMAP_SIZE);
     s2e()->getExecutor()->setSearcher(this);
 }
 
 //return *states[theRNG.getInt32()%states.size()];
 
-klee::ExecutionState& FuzzyS2E::selectState()
+klee::ExecutionState& FuzzyStuckHelper::selectState()
 {
     klee::ExecutionState *state;
     if (!m_speculativeStates.empty()) { //to maximum random, priority to speculative state
@@ -158,7 +144,7 @@ klee::ExecutionState& FuzzyS2E::selectState()
     return *state;
 }
 
-void FuzzyS2E::update(klee::ExecutionState *current,
+void FuzzyStuckHelper::update(klee::ExecutionState *current,
         const std::set<klee::ExecutionState*> &addedStates,
         const std::set<klee::ExecutionState*> &removedStates)
 {
@@ -201,13 +187,13 @@ void FuzzyS2E::update(klee::ExecutionState *current,
 
 }
 
-bool FuzzyS2E::empty()
+bool FuzzyStuckHelper::empty()
 {
     return m_normalStates.empty() && m_speculativeStates.empty();
 }
 
 
-void FuzzyS2E::onModuleTranslateBlockStart(ExecutionSignal* es,
+void FuzzyStuckHelper::onModuleTranslateBlockStart(ExecutionSignal* es,
         S2EExecutionState* state, const ModuleDescriptor &mod,
         TranslationBlock* tb, uint64_t pc)
 {
@@ -218,152 +204,108 @@ void FuzzyS2E::onModuleTranslateBlockStart(ExecutionSignal* es,
         m_mainPid = state->getPid(); // get pid at first time and only do it once
     if (m_mainModule == mod.Name) {
         es->connect(
-        sigc::mem_fun(*this, &FuzzyS2E::slotExecuteBlockStart));
+        sigc::mem_fun(*this, &FuzzyStuckHelper::slotExecuteBlockStart));
     }
 
 }
 
 /**
  */
-void FuzzyS2E::slotExecuteBlockStart(S2EExecutionState *state, uint64_t pc)
+void FuzzyStuckHelper::slotExecuteBlockStart(S2EExecutionState *state, uint64_t pc)
 {
     if (!state->getID())
         return;
     if (pc > 0xc000000) // Ignore kernel module in order to compare with vanilla AFL
         return;
-    // DEBUG purpose, to find the duplicate testcases
-    if (0) {
-        std::stringstream traceBB_strstream;
-        traceBB_strstream << "/tmp/afltraceBB/" << m_QEMUPid << ".BB";
-        Path traceBB_file(traceBB_strstream.str().c_str());
-        m_traceBBfile = &traceBB_file;
-        if (::access(m_traceBBfile->c_str(), F_OK)) // for all testcases
-            m_traceBBfile->createFileOnDisk();
-        int traceBBfilefd = open(m_traceBBfile->c_str(), O_RDWR | O_APPEND);
-        char strBB[24];
-        sprintf(strBB, "0x%08x\n", (uint32_t) pc);
-        write(traceBBfilefd, &strBB, strlen(strBB));
-        close(traceBBfilefd);
+    DECLARE_PLUGINSTATE(FuzzyStuckHelperState, state);
+    if (!plgState->m_isTryState)
+        plgState->updatePre_loc(pc);
+    else {
+        /* If current state is a new created try state, we first decide whether this
+         branch has been covered, if yes, forget it, otherwise we generate a new testcase.
+         Then kill this state, let the scheduler select the original state. */
+        if (plgState->isfindNewBranch(m_caseGenetated, m_aflVirginSHM, pc)) {
+            std::stringstream str_dstFile;
+            str_dstFile << m_afl_initDir << "/" << state->getID(); // str_dstFile = /path/to/afl/initDir/ID
+            Path dstFile(str_dstFile.str());
+            std::string errMsg;
+            if (dstFile.createFileOnDisk(&errMsg)) {
+                s2e()->getDebugStream() << errMsg << "\n";
+                s2e()->getDebugStream().flush();
+            } else {
+                if(generateCaseFile(state, dstFile)){
+                    // after we successfully generate the testcase, we should record it.
+                    state->m_father->m_forkedfromMe++;
+                    plgState->updateCaseGenetated(m_caseGenetated, pc);
+                }
+            }
+        }
+        // As we have defined the searcher's behavior, so after we terminate this state, the non-zero state will be selected.
+        s2e()->getExecutor()->terminateStateEarly(*state, "FuzzySearcher: terminate this for fuzzing");
     }
-    // DEBUG end.
-    DECLARE_PLUGINSTATE(FuzzyS2EState, state);
-    plgState->updateAFLBitmapSHM(m_aflBitmapSHM, pc);
 }
 
-void FuzzyS2E::onKernelFunctionExecutionStart(S2EExecutionState* state, KernelFunctionMonitor::KERNELFUNCS func)
+/*
+ * When find a new branch, fuzzys2e will generate a testcase for afl.
+ * Indeed, we should set SMT timeout so that we will not get stuck in symbex.
+ */
+void FuzzyStuckHelper::onStateFork(S2EExecutionState *state,
+        const std::vector<S2EExecutionState*>& newStates,
+        const std::vector<klee::ref<klee::Expr> >& newConditions)
 {
-    if (func != KernelFunctionMonitor::DO_EXIT) // focus on do_exit
+    assert(newStates.size() > 0);
+    int origID = state->getID();
+    if (!origID)
         return;
-    if(m_mainPid != state->getPid())
-        return; // ignore other exit signal
-    uint32_t code;
-    state->readCpuRegisterConcrete(CPU_OFFSET(regs[R_EAX]), &code, 4);
-    s2e()->getDebugStream() << "[A] Process " << state->getPid() <<  " is unloading, code is " << code << "\n";
-    if(WIFSIGNALED(code)){
-        DECLARE_PLUGINSTATE(FuzzyS2EState, state);
-        plgState->m_fault = FAULT_CRASH;
-    }
-    return;
+    int newStateIndex = (newStates[0]->getID() == origID) ? 1 : 0;
+    S2EExecutionState *new_state = newStates[newStateIndex];
+    DECLARE_PLUGINSTATE(FuzzyStuckHelperState, new_state);
+    plgState->m_isTryState = true;
+    new_state->disableForking();
 }
 
-bool FuzzyS2E::getAFLBitmapSHM()
-{
-    m_aflBitmapSHM = NULL;
-    key_t shmkey;
-    std::stringstream tracebits_strstream;
-    tracebits_strstream << "/tmp/afltracebits/trace_" << m_QEMUPid;
-    Path bitmap_file(tracebits_strstream.str().c_str());
-    std::string errmsg;
-    if(bitmap_file.createFileOnDisk(&errmsg)){
-        s2e()->getDebugStream() << "FuzzyS2E: createFileOnDisk() error: "
-                            << errmsg << "\n";
-        exit(-1);
-    }
 
+bool FuzzyStuckHelper::getAFLVirginSHM()
+{
+    m_aflVirginSHM = NULL;
+    key_t shmkey;
     do {
-        if ((shmkey = ftok(bitmap_file.c_str(), 1)) < 0) {
-            s2e()->getDebugStream() << "FuzzyS2E: ftok() error: "
+        if ((shmkey = ftok("/tmp/aflvirgin", 'a')) < 0) {
+            s2e()->getDebugStream() << "FuzzyStuckHelper: ftok() error: "
                     << strerror(errno) << "\n";
             return false;
         }
         int shm_id;
         try {
-            shm_id = shmget(shmkey, AFL_BITMAP_SIZE, IPC_CREAT | 0600);
+            shm_id = shmget(shmkey, AFL_BITMAP_SIZE, 0600);
             if (shm_id < 0) {
-                s2e()->getDebugStream() << "FuzzyS2E: shmget() error: "
+                s2e()->getDebugStream() << "FuzzyStuckHelper: shmget() error: "
                         << strerror(errno) << "\n";
                 return false;
             }
             void * afl_area_ptr = shmat(shm_id, NULL, 0);
             if (afl_area_ptr == (void*) -1) {
-                s2e()->getDebugStream() << "FuzzyS2E: shmat() error: "
+                s2e()->getDebugStream() << "FuzzyStuckHelper: shmat() error: "
                         << strerror(errno) << "\n";
                 exit(1);
             }
-            m_aflBitmapSHM = (unsigned char*) afl_area_ptr;
-            m_findBitMapSHM = true;
-            m_shmID = shm_id;
+            m_aflVirginSHM = (unsigned char*) afl_area_ptr;
+            m_findVirginSHM = true;
+            m_virgin_shmID = shm_id;
             if (m_verbose) {
-                s2e()->getDebugStream() << "FuzzyS2E: Trace bits share memory id is "
+                s2e()->getDebugStream() << "FuzzyStuckHelper: Virgin bits share memory id is "
                         << shm_id << "\n";
             }
         } catch (...) {
+            s2e()->getDebugStream() << "FuzzyStuckHelper: getAFLVirginSHM failed, unknown reason.\n";
             return false;
         }
     } while (0);
     return true;
 }
 
-bool FuzzyS2E::initQemuQueue()
-{
-    int res;
-    if (access(QEMUQUEUE, F_OK) == -1) {
-        res = mkfifo(QEMUQUEUE, 0777);
-        if (res != 0) {
-            s2e()->getDebugStream() << "Could not create fifo " << QEMUQUEUE << ".\n";
-            return false;
-        }
-    }
-    m_queueFd = open(QEMUQUEUE, O_WRONLY | O_NONBLOCK);
 
-    if (m_queueFd == -1)
-    {
-        s2e()->getDebugStream() << "Could not open fifo " << QEMUQUEUE << ".\n";
-        return false;
-    }
-    // after the queue is initialized, write OK to FIFO
-    assert(m_QEMUPid);
-    char buffer[FIFOBUFFERSIZE + 1];
-    memset(buffer, '\0', FIFOBUFFERSIZE + 1);
-    sprintf(buffer, "%d|%d|%lu", m_QEMUPid, FAULT_NONE, (uint64_t)0);
-    res = write(m_queueFd, buffer, FIFOBUFFERSIZE);
-    if (res == -1)
-    {
-        s2e()->getDebugStream() << "Write error on pipe\n";
-        exit(EXIT_FAILURE);
-    }
-    return true;
-}
-
-bool FuzzyS2E::initReadySHM()
-{
-    void *shm = NULL;
-    int shmid;
-    shmid = shmget((key_t) READYSHMID, sizeof(uint8_t)*65536, 0666);
-    if (shmid == -1) {
-        fprintf(stderr, "shmget failed\n");
-        return false;
-    }
-    shm = shmat(shmid, (void*) 0, 0);
-    if (shm == (void*) -1) {
-        fprintf(stderr, "shmat failed\n");
-        return false;
-    }
-    m_ReadyArray = (uint8_t*) shm;
-    return true;
-}
-
-bool FuzzyS2E::generateCaseFile(S2EExecutionState *state,
+bool FuzzyStuckHelper::generateCaseFile(S2EExecutionState *state,
         Path destfilename)
 {
     //copy out template file to destination file
@@ -466,13 +408,13 @@ bool FuzzyS2E::generateCaseFile(S2EExecutionState *state,
     return true;
 }
 
-void FuzzyS2E::waitforafltestcase(void)
+void FuzzyStuckHelper::waitforafltestcase(void)
 {
     char tmp[4];
     char err[128];
     int len;
     do{
-        len = ::read(CTRLPIPE(m_QEMUPid), tmp, 4);
+        len = ::read(AFLCTRLPIPE, tmp, 4);
         if(len == -1){
             if(errno == EINTR)
                 continue;
@@ -490,22 +432,15 @@ void FuzzyS2E::waitforafltestcase(void)
 }
 
 // Write OK signal to queue to notify AFL that guest is ready (message is qemu's pid).
-void FuzzyS2E::TellAFL(S2EExecutionState *state) // mark this as an atom procedure, i.e. should NOT be interrupted
+void FuzzyStuckHelper::TellAFL(S2EExecutionState *state)
 {
-    assert(!m_ReadyArray[m_QEMUPid] && "I'm free before? ");
-    m_ReadyArray[m_QEMUPid] = 1;
-    DECLARE_PLUGINSTATE(FuzzyS2EState, state);
-    assert(m_queueFd > 0 && "Haven't seen qemu queue yet?");
-    char buffer[FIFOBUFFERSIZE + 1];
-    memset(buffer, '\0', FIFOBUFFERSIZE + 1);
-    if(!plgState->m_ExecTime){
-        s2e()->getDebugStream() << "Cannot get execute time ?\n";
-        s2e()->getDebugStream().flush();
-        exit(EXIT_FAILURE);
-    }
-    uint64_t m_ellapsetime = plgState->m_ExecTime->check();
-    sprintf(buffer, "%d|%d|%lu", m_QEMUPid, plgState->m_fault, m_ellapsetime);
-    int res = write(m_queueFd, buffer, FIFOBUFFERSIZE);
+    char tmp[4];
+    tmp[0] = 'n';
+    tmp[1] = 'u';
+    tmp[2] = 'd';
+    tmp[3] = 't';
+    int res = write(S2ECTRLPIPE + 1, tmp, sizeof(tmp)); // tell AFL we have finish a test procedure
+    s2e()->getMessagesStream(state) << "I have told AFL that I am done, so what?"<< '\n';
     if (res == -1)
     {
         s2e()->getDebugStream() << "Write error on pipe, qemu is going to die...\n";
@@ -514,7 +449,7 @@ void FuzzyS2E::TellAFL(S2EExecutionState *state) // mark this as an atom procedu
     }
 }
 
-void FuzzyS2E::onCustomInstruction(
+void FuzzyStuckHelper::onCustomInstruction(
         S2EExecutionState *state,
         uint64_t operand
         )
@@ -537,7 +472,7 @@ void FuzzyS2E::onCustomInstruction(
             break;
         }
         default: {
-            s2e()->getWarningsStream(state) << "Invalid FuzzyS2E opcode "
+            s2e()->getWarningsStream(state) << "Invalid FuzzyStuckHelper opcode "
                     << hexval(operand) << '\n';
             break;
         }
@@ -546,52 +481,72 @@ void FuzzyS2E::onCustomInstruction(
 }
 
 
-bool FuzzyS2EState::updateAFLBitmapSHM(unsigned char* AflBitmap,
-        uint32_t curBBpc)
+void FuzzyStuckHelperState::updateCaseGenetated(unsigned char* caseGenerated,
+        uint64_t curBBpc)
+{
+    uint64_t cur_location = (curBBpc >> 4) ^ (curBBpc << 8);
+    cur_location &= AFL_BITMAP_SIZE - 1;
+    if (cur_location >= AFL_BITMAP_SIZE)
+        return;
+    caseGenerated[cur_location ^ m_prev_loc] = 0;
+    m_prev_loc = cur_location >> 1;
+}
+
+bool FuzzyStuckHelperState::updatePre_loc(uint32_t curBBpc)
 {
     uint32_t cur_location = (curBBpc >> 4) ^ (curBBpc << 8);
     cur_location &= AFL_BITMAP_SIZE - 1;
     if (cur_location >= AFL_BITMAP_SIZE)
         return false;
-    AflBitmap[cur_location ^ m_prev_loc]++;
     m_prev_loc = cur_location >> 1;
     return true;
 }
 
-FuzzyS2EState::FuzzyS2EState()
+/*
+  There are two types of old branch:
+  1. Forked and case-generated by S2E
+  2. Executed by S2E/AFL
+ */
+bool FuzzyStuckHelperState::isfindNewBranch(unsigned char* CaseGenetated, unsigned char* Virgin_bitmap,
+        uint64_t curBBpc)
+{
+    uint64_t cur_location = (curBBpc >> 4) ^ (curBBpc << 8);
+    cur_location &= AFL_BITMAP_SIZE - 1;
+    g_s2e->getDebugStream() << "cur_location is " << cur_location << ", and virgin map here is " << hexval(Virgin_bitmap[cur_location ^ m_prev_loc]) <<
+            ", and CaseGenetated here is " << hexval(CaseGenetated[cur_location ^ m_prev_loc]) << "\n";
+    if (cur_location >= AFL_BITMAP_SIZE)
+        return false;
+    return Virgin_bitmap[cur_location ^ m_prev_loc] && CaseGenetated[cur_location ^ m_prev_loc];
+}
+
+FuzzyStuckHelperState::FuzzyStuckHelperState()
 {
     m_plugin = NULL;
     m_state = NULL;
     m_prev_loc = 0;
-    m_ExecTime = new klee::WallTimer();
-    m_fault = FAULT_NONE;
+    m_isTryState = false;
 }
 
-FuzzyS2EState::FuzzyS2EState(S2EExecutionState *s, Plugin *p)
+FuzzyStuckHelperState::FuzzyStuckHelperState(S2EExecutionState *s, Plugin *p)
 {
-    m_plugin = static_cast<FuzzyS2E*>(p);
+    m_plugin = static_cast<FuzzyStuckHelper*>(p);
     m_state = s;
     m_prev_loc = 0;
-    if (m_ExecTime)
-        delete m_ExecTime;
-    m_ExecTime = new klee::WallTimer(); // we want a new timer
-    m_fault = FAULT_NONE;
+    m_isTryState = false;
 }
 
-FuzzyS2EState::~FuzzyS2EState()
+FuzzyStuckHelperState::~FuzzyStuckHelperState()
 {
-    if (m_ExecTime)
-        delete m_ExecTime;
 }
 
-PluginState *FuzzyS2EState::clone() const
+PluginState *FuzzyStuckHelperState::clone() const
 {
-    return new FuzzyS2EState(*this);
+    return new FuzzyStuckHelperState(*this);
 }
 
-PluginState *FuzzyS2EState::factory(Plugin *p, S2EExecutionState *s)
+PluginState *FuzzyStuckHelperState::factory(Plugin *p, S2EExecutionState *s)
 {
-    FuzzyS2EState *ret = new FuzzyS2EState(s, p);
+    FuzzyStuckHelperState *ret = new FuzzyStuckHelperState(s, p);
     return ret;
 }
 }

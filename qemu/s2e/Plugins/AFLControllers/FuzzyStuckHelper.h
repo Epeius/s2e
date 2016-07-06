@@ -30,9 +30,9 @@
  *
  */
 
-#ifndef FUZZYS2E_H_
+#ifndef FUZZYSTUCKHELPER_H_
 
-#define FUZZYS2E_H_
+#define FUZZYSTUCKHELPER_H_
 
 #include <s2e/Plugin.h>
 #include <s2e/Plugins/CorePlugin.h>
@@ -50,34 +50,33 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
 
-#include <s2e/Plugins/LinuxInterceptor/KernelFunctionMonitor.h>
 #include <s2e/Plugins/X86ExceptionInterceptor.h>
 
 using namespace llvm::sys;
 namespace s2e {
 namespace plugins {
-class FuzzyS2E;
+class FuzzyStuckHelper;
 
-class FuzzyS2EState: public PluginState
+class FuzzyStuckHelperState: public PluginState
 {
 public:
-    FuzzyS2E* m_plugin;
+    FuzzyStuckHelper* m_plugin;
     S2EExecutionState *m_state;
 public:
     //in order to improve efficiency, we write the branches of S2E to AFL's bitmap
     uint32_t m_prev_loc; //previous location when executing
-    klee::WallTimer *m_ExecTime;
-    uint8_t m_fault;
-    FuzzyS2EState();
-    FuzzyS2EState(S2EExecutionState *s, Plugin *p);
-    virtual ~FuzzyS2EState();
+    bool m_isTryState;
+    FuzzyStuckHelperState();
+    FuzzyStuckHelperState(S2EExecutionState *s, Plugin *p);
+    virtual ~FuzzyStuckHelperState();
     virtual PluginState *clone() const;
     static PluginState *factory(Plugin *p, S2EExecutionState *s);
 
-    inline bool updateAFLBitmapSHM(unsigned char* bitmap, uint32_t pc);
+    inline bool updatePre_loc(uint32_t pc);
+    bool isfindNewBranch(unsigned char* CaseGenetated, unsigned char* Virgin_bitmap, uint64_t curBBpc);
+    void updateCaseGenetated(unsigned char* caseGenerated, uint64_t curBBpc);
 
-
-    friend class FuzzyS2E;
+    friend class FuzzyStuckHelper;
 };
 
 /*
@@ -86,28 +85,16 @@ public:
 
 #define AFL_BITMAP_SIZE (1 << 16)
 
-// QEMU instances queue (as a file)
-#define QEMUQUEUE "/tmp/afl_qemu_queue"
-#define FIFOBUFFERSIZE 512
 // Test cases directory
 #define TESTCASEDIR "/tmp/afltracebits/"
 // Every control pipe
-#define CTRLPIPE(_x) (_x + 226)
-// Share memory ID
-#define READYSHMID 1234
+#define S2ECTRLPIPE 106
+#define AFLCTRLPIPE 160
 
-enum {
-  /* 00 */ FAULT_NONE,
-  /* 01 */ FAULT_HANG,
-  /* 02 */ FAULT_CRASH,
-  /* 03 */ FAULT_ERROR,  // Unable to execute target application.
-  /* 04 */ FAULT_NOINST, // impossible
-  /* 05 */ FAULT_NOBITS  // impossible
-};
 
-#define SMKEY 0x200 // MUST BE EQUAL to what in afl
+//NOTE: This version of FuzzyS2E is much heavier as we need to generate test cases for untouched branches.
 
-class FuzzyS2E: public Plugin, public klee::Searcher
+class FuzzyStuckHelper: public Plugin, public klee::Searcher
 {
 S2E_PLUGIN
 
@@ -118,9 +105,7 @@ private:
             );
     void waitforafltestcase(void);
     bool generateCaseFile(S2EExecutionState *state, Path templatefile);
-    bool getAFLBitmapSHM();
-    bool initQemuQueue();
-    bool initReadySHM();
+    bool getAFLVirginSHM();
     void TellAFL(S2EExecutionState *state);
 
 public:
@@ -139,22 +124,9 @@ public:
     };
     typedef std::set<klee::ExecutionState*, SortById> States;
 
-    typedef std::vector< klee::ref<klee::Expr> > PathConstraint; // use path constraint to represent a path
-    typedef std::set< PathConstraint >TouchedPaths;
-    typedef std::map<uint64_t, TouchedPaths> size_TouchedPaths;
-
-    typedef std::vector<uint64_t> ConstArray;
-
-    std::vector<ConstArray> m_All_ConstArray;
-    std::map<std::string, uint64_t> m_ConstArray_ALLIndex;
-
-    size_TouchedPaths m_touched_Size_Paths;
-
-    typedef std::set<std::string> StringSet;
     typedef std::pair<std::string, std::vector<unsigned char> > VarValuePair;
     typedef std::vector<VarValuePair> ConcreteInputs;
     ModuleExecutionDetector *m_detector;
-    KernelFunctionMonitor *m_kfmonitor;
 
     States m_normalStates;
     States m_speculativeStates;
@@ -170,8 +142,6 @@ public:
     /**
      * schdualer
      */
-    unsigned char* m_aflBitmapSHM; //AFL's trace bits bitmap
-    bool m_findBitMapSHM; //whether we have find trace bits bitmap
 
     std::string m_afl_initDir;   //AFL's initial directory
     // AFL end
@@ -181,27 +151,25 @@ public:
 
     int m_shmID;
     uint32_t m_QEMUPid;
-    uint32_t m_PPid;
-    int m_queueFd;
-    uint8_t* m_ReadyArray;
     bool m_verbose; //verbose debug output
     HostFiles* m_HostFiles;
-    Path* m_traceBBfile;
+
+    unsigned char* m_aflVirginSHM; //AFL's virgin bits bitmap
+    bool m_findVirginSHM; //whether we have find virgin bits bitmap
+    int m_virgin_shmID;
+
+
 public:
-    FuzzyS2E(S2E* s2e) :
+    FuzzyStuckHelper(S2E* s2e) :
             Plugin(s2e)
     {
         m_detector = NULL;
-        m_traceBBfile = NULL;
         m_shmID = 0;
         m_mainPid = 0;
         m_QEMUPid = 0;
-        m_queueFd = -1;
-        m_aflBitmapSHM = 0;
-        m_findBitMapSHM = false;
         m_verbose = false;
     }
-    virtual ~FuzzyS2E();
+    virtual ~FuzzyStuckHelper();
     virtual void initialize();
 
     void slotExecuteBlockStart(S2EExecutionState* state, uint64_t pc);
@@ -209,10 +177,12 @@ public:
     void onModuleTranslateBlockStart(ExecutionSignal*, S2EExecutionState*,
             const ModuleDescriptor &, TranslationBlock*, uint64_t);
 
-    void onKernelFunctionExecutionStart(S2EExecutionState* state, KernelFunctionMonitor::KERNELFUNCS func);
+    void onStateFork(S2EExecutionState *state,
+            const std::vector<S2EExecutionState*>& newStates,
+            const std::vector<klee::ref<klee::Expr> >& newConditions);
 
 };
 }
 } /* namespace s2e */
 
-#endif /* !FUZZYS2E_H_ */
+#endif /* !FUZZYSTUCKHELPER_H_ */

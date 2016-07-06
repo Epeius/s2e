@@ -54,8 +54,6 @@ struct QObject;
 }
 
 namespace s2e {
-#define AFLS2EHOSTPIPE_S2E 137 // pipe used to synchronize myself and AFL, see in afl-fuzz.c (for S2E write)
-#define AFLS2EHOSTPIPE_AFL 147 // pipe used to synchronize myself and AFL, see in afl-fuzz.c (for AFL write)
 class S2EExecutionState;
 
 /** A type of a signal emitted on instruction execution. Instances of this signal
