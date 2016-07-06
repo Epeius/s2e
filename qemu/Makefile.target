@@ -515,6 +515,7 @@ s2eobj-y += s2e/Plugins/AFLControllers/AutoShFileGenerator.o
 s2eobj-y += s2e/Plugins/AFLControllers/ForkController.o
 s2eobj-y += s2e/Plugins/AFLControllers/FuzzySearcher.o 
 s2eobj-y += s2e/Plugins/AFLControllers/FuzzyStuckHelper.o 
+s2eobj-y += s2e/Plugins/AFLControllers/FuzzyS2E.o 
 s2eobj-y += s2e/Plugins/AFLControllers/LoopFuzzer.o
 s2eobj-y += s2e/Plugins/AFLControllers/SegSynchronization.o
 s2eobj-y += s2e/Plugins/LinuxInterceptor/KernelFunctionMonitor.o
