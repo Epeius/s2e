@@ -154,3 +154,10 @@ void ConstraintManager::addConstraint(ref<Expr> e) {
   e = simplifyExpr(e);
   addConstraintInternal(e);
 }
+
+void ConstraintManager::remove2lastConstaint() {
+    for (ConstraintManager::constraints_ty::iterator
+             it = constraints.begin(), ie = constraints.end(); it != ie-1; ++it) {
+            constraints.erase(it);
+    }
+}

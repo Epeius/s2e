@@ -231,21 +231,6 @@ void FuzzyS2E::slotExecuteBlockStart(S2EExecutionState *state, uint64_t pc)
         return;
     if (pc > 0xc000000) // Ignore kernel module in order to compare with vanilla AFL
         return;
-    // DEBUG purpose, to find the duplicate testcases
-    if (0) {
-        std::stringstream traceBB_strstream;
-        traceBB_strstream << "/tmp/afltraceBB/" << m_QEMUPid << ".BB";
-        Path traceBB_file(traceBB_strstream.str().c_str());
-        m_traceBBfile = &traceBB_file;
-        if (::access(m_traceBBfile->c_str(), F_OK)) // for all testcases
-            m_traceBBfile->createFileOnDisk();
-        int traceBBfilefd = open(m_traceBBfile->c_str(), O_RDWR | O_APPEND);
-        char strBB[24];
-        sprintf(strBB, "0x%08x\n", (uint32_t) pc);
-        write(traceBBfilefd, &strBB, strlen(strBB));
-        close(traceBBfilefd);
-    }
-    // DEBUG end.
     DECLARE_PLUGINSTATE(FuzzyS2EState, state);
     plgState->updateAFLBitmapSHM(m_aflBitmapSHM, pc);
 }

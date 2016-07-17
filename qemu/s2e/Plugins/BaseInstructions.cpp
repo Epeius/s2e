@@ -75,6 +75,7 @@ S2E_DEFINE_PLUGIN(BaseInstructions, "Default set of custom instructions plugin",
 void BaseInstructions::initialize()
 {
     m_current_conditon = 0;
+    has_m_dummy_symb = false;
     s2e()->getCorePlugin()->onCustomInstruction.connect(
             sigc::mem_fun(*this, &BaseInstructions::onCustomInstruction));
 
@@ -109,7 +110,7 @@ void BaseInstructions::makeSymbolic(S2EExecutionState *state, bool makeConcolic)
             << "Inserting symbolic data at " << hexval(address)
             << " of size " << hexval(size)
             << " with name '" << nameStr << "'\n";
-    state->m_symFileLen = size;
+
     std::vector<unsigned char> concreteData;
     vector<ref<Expr> > symb;
 
@@ -220,22 +221,31 @@ void BaseInstructions::killState(S2EExecutionState *state)
 void BaseInstructions::forkState(S2EExecutionState *state)
 {
     klee::Executor::StatePair sp;
-    klee::ref<klee::Expr> dummy_symb;
     bool oldForkStatus = state->isForkingEnabled();
     state->jumpToSymbolicCpp();
     state->enableForking();
-    dummy_symb = state->createSymbolicValue("dummy_symb_var",
-                    klee::Expr::Int32); // we need to create an initial state which can be used to continue execution
-    klee::ref<klee::Expr> cond = klee::NeExpr::create(dummy_symb,
-                klee::ConstantExpr::create(m_current_conditon, klee::Expr::Int32));
-    sp = s2e()->getExecutor()->fork(*state, cond, false);
 
+    assert(!state->getID() && "Should come from initial state!");
+
+    if(!has_m_dummy_symb){
+        has_m_dummy_symb = true;
+        std::vector<unsigned char> concreteValues;
+        unsigned bytes = klee::Expr::getMinBytesForWidth(klee::Expr::Int32);
+        for (unsigned i = 0; i < bytes; ++i) {
+            concreteValues.push_back(0xFF);
+        }
+        m_dummy_symb = state->createConcolicValue("dummy_symb_var",
+                        klee::Expr::Int32, concreteValues); // we need to create an initial state which can be used to continue execution
+    }
+
+    klee::ref<klee::Expr> cond = klee::UleExpr::create(m_dummy_symb,
+                klee::ConstantExpr::create(m_current_conditon, klee::Expr::Int32));
+
+    sp = s2e()->getExecutor()->fork(*state, cond, false);
     S2EExecutionState *ts = static_cast<S2EExecutionState *>(sp.first);
     S2EExecutionState *fs = static_cast<S2EExecutionState *>(sp.second);
-
-    klee::ref<klee::Expr> condnot = klee::EqExpr::create(dummy_symb,
-            klee::ConstantExpr::create(m_current_conditon, klee::Expr::Int32));
-    fs->addConstraint(condnot);
+    if (ts->getID() > 2)
+        state->constraints.remove2lastConstaint();
 
     ts->setForking(oldForkStatus);
     fs->setForking(oldForkStatus);
@@ -243,7 +253,7 @@ void BaseInstructions::forkState(S2EExecutionState *state)
     ts->m_is_carry_on_state = true;
     fs->m_is_carry_on_state = false;
 
-    m_current_conditon++;
+    m_current_conditon+=1;
 
     return;
 }

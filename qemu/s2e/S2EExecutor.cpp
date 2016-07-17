@@ -1526,6 +1526,12 @@ S2EExecutionState* S2EExecutor::selectNextState(S2EExecutionState *state)
 
     S2EExecutionState* newState =
             static_cast<S2EExecutionState*  >(&newKleeState);
+    m_s2e->getDebugStream(state) << "Currently we have " << states.size() << " states\nThey are ";
+    foreach2(it, states.begin(), states.end()) {
+        S2EExecutionState *s2estate = static_cast<S2EExecutionState*>(*it);
+        m_s2e->getDebugStream(state) << "    state - " << s2estate->getID() << "\n";
+    }
+    m_s2e->getDebugStream(state).flush();
     assert(states.find(newState) != states.end());
 
     if(!state->m_active) {
@@ -2096,6 +2102,7 @@ void S2EExecutor::doStateFork(S2EExecutionState *originalState,
     else
         newState0->m_father = newState1;
     llvm::raw_ostream& out = m_s2e->getMessagesStream(originalState);
+
     if (originalState->getID()) {
         if (S2EMaxForks != ~0u && originalState->m_forkedfromMe > S2EMaxForks)
         {
@@ -2112,6 +2119,9 @@ void S2EExecutor::doStateFork(S2EExecutionState *originalState,
     }
     for(unsigned i = 0; i < newStates.size(); ++i) {
         S2EExecutionState* newState = newStates[i];
+        m_s2e->getDebugStream() << "State " << newState->getID() << "'s constaint:\n";
+
+            newState->constraints.print(out);
 
         if (VerboseFork) {
             out << "    state " << newState->getID() << " with condition "

@@ -217,6 +217,7 @@ void FuzzyStuckHelper::slotExecuteBlockStart(S2EExecutionState *state, uint64_t 
         return;
     if (pc > 0xc000000) // Ignore kernel module in order to compare with vanilla AFL
         return;
+    s2e()->getDebugStream(state) << "FuzzyStuckHelper: Executing BB at " << hexval(pc) << "\n";
     DECLARE_PLUGINSTATE(FuzzyStuckHelperState, state);
     if (!plgState->m_isTryState)
         plgState->updatePre_loc(pc);
@@ -309,7 +310,9 @@ bool FuzzyStuckHelper::generateCaseFile(S2EExecutionState *state,
         Path destfilename)
 {
     //copy out template file to destination file
-    Path template_file("/tmp/aa.jpeg");
+    std::stringstream testcase_strstream;
+    testcase_strstream << "/tmp/afltestcase/" << m_QEMUPid << "/aa.jpeg";
+    Path template_file(testcase_strstream.str().c_str());
     std::string errMsg;
     if (llvm::sys::CopyFile(destfilename, template_file, &errMsg)){
         s2e()->getDebugStream() << errMsg << "\n";
@@ -516,7 +519,8 @@ bool FuzzyStuckHelperState::isfindNewBranch(unsigned char* CaseGenetated, unsign
             ", and CaseGenetated here is " << hexval(CaseGenetated[cur_location ^ m_prev_loc]) << "\n";
     if (cur_location >= AFL_BITMAP_SIZE)
         return false;
-    return Virgin_bitmap[cur_location ^ m_prev_loc] && CaseGenetated[cur_location ^ m_prev_loc];
+    //return Virgin_bitmap[cur_location ^ m_prev_loc] && CaseGenetated[cur_location ^ m_prev_loc];
+    return true; // We assume each branch is new to avoid complex new branch analysis
 }
 
 FuzzyStuckHelperState::FuzzyStuckHelperState()

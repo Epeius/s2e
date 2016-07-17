@@ -48,6 +48,8 @@ class BaseInstructions : public Plugin
 {
     S2E_PLUGIN
 public:
+    klee::ref<klee::Expr> m_dummy_symb;
+    bool has_m_dummy_symb;
     BaseInstructions(S2E* s2e): Plugin(s2e) {}
 
     void initialize();

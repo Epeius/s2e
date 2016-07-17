@@ -119,8 +119,6 @@ public:
 	bool m_isfuzzymode;
 	int m_forkedfromMe;
 	S2EExecutionState* m_father; //specify the father
-	std::string m_strSymFileName;
-	uint64_t m_symFileLen;
 protected:
     friend class S2EExecutor;
 
@@ -207,7 +205,6 @@ protected:
     /** Set when execution enters doInterrupt, reset when it exits. */
     bool m_runningExceptionEmulationCode;
 
-    ExecutionState* clone();
     void addressSpaceChange(const klee::MemoryObject *mo,
                             const klee::ObjectState *oldState,
                             klee::ObjectState *newState);
@@ -222,6 +219,7 @@ public:
     S2EExecutionState(klee::KFunction *kf);
     ~S2EExecutionState();
 
+    ExecutionState* clone();
     int getID() const { return m_stateID; }
 
     S2EDeviceState *getDeviceState() {

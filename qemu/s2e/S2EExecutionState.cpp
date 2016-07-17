@@ -119,7 +119,6 @@ S2EExecutionState::S2EExecutionState(klee::KFunction *kf) :
     //XXX: make this a struct, not a pointer...
 	m_preparingstate = false;
 	m_forkedfromMe = 0;
-	m_symFileLen = 0;
 	m_isfuzzymode = TaintMode;
 	m_father = NULL;
     m_timersState = new TimersState;
@@ -1542,7 +1541,7 @@ std::vector<ref<Expr> > S2EExecutionState::createConcolicArray(
             std::vector<unsigned char> &concreteBuffer)
 {
     assert(concreteBuffer.size() == size || concreteBuffer.size() == 0);
-    std::string sname = m_isfuzzymode ? name : getUniqueVarName(name);
+    std::string sname = getUniqueVarName(name);
     const Array *array = new Array(sname, size);
 
     UpdateList ul(array, 0);
@@ -1566,7 +1565,6 @@ std::vector<ref<Expr> > S2EExecutionState::createConcolicArray(
     if (concreteBuffer.size() == size) {
         if (ConcolicMode) {
             concolics.add(array, concreteBuffer);
-            m_strSymFileName = sname;
         } else {
             g_s2e->getWarningsStream(this)
                     << "Concolic mode disabled: ignoring concrete assignments for " << name << '\n';

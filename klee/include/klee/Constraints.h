@@ -46,6 +46,8 @@ public:
 
   void addConstraint(ref<Expr> e);
   
+  void remove2lastConstaint();
+
   bool empty() const {
     return constraints.empty();
   }

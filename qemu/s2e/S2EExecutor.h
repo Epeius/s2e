@@ -118,7 +118,7 @@ public:
 
     /** Moves yielded state back into list of schedulable states */
     void restoreYieldedState(void);
-
+    void notifyBranch(klee::ExecutionState &state);
     S2EExecutor(S2E* s2e, TCGLLVMContext *tcgLVMContext,
                 const InterpreterOptions &opts,
                 klee::InterpreterHandler *ie);
@@ -325,7 +325,7 @@ protected:
               const std::vector< klee::ref<klee::Expr> > &conditions,
               std::vector<klee::ExecutionState*> &result);
 
-    void notifyBranch(klee::ExecutionState &state);
+    //void notifyBranch(klee::ExecutionState &state);
 
     void notifyFork(klee::ExecutionState &originalState, klee::ref<klee::Expr> &condition,
                     StatePair &targets);
